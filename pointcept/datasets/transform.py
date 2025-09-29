@@ -394,7 +394,18 @@ class ChromaticAutoContrast(object):
         if "color" in data_dict.keys() and np.random.rand() < self.p:
             lo = np.min(data_dict["color"], 0, keepdims=True)
             hi = np.max(data_dict["color"], 0, keepdims=True)
-            scale = 255 / (hi - lo)
+            # print(data_dict['color'].min(),data_dict['color'].max())
+            # exit()
+            # print(hi)
+            # print(lo)
+            # if th.all(hi - lo) < 1e-10:
+            #     scale = 1.0
+            # else:
+            #     # scale = 255 / (hi - lo)
+            #     scale = 255.0 / (hi - lo)
+
+            diff = hi - lo
+            scale = np.where(diff < 1e-10, 1.0, 255.0 / diff)
             contrast_feat = (data_dict["color"][:, :3] - lo) * scale
             blend_factor = (
                 np.random.rand() if self.blend_factor is None else self.blend_factor

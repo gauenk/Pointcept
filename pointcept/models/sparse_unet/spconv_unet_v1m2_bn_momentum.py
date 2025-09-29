@@ -133,7 +133,7 @@ class SpUNetBase(nn.Module):
             spconv.SubMConv3d(
                 in_channels,
                 base_channels,
-                kernel_size=5,
+                kernel_size=3, # should be 5
                 padding=1,
                 bias=False,
                 indice_key="stem",
