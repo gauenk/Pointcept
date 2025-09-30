@@ -1,6 +1,6 @@
 from .defaults import DefaultDataset, ConcatDataset
 from .builder import build_dataset
-from .utils import point_collate_fn, collate_fn, collate_fn_gpu
+from .utils import point_collate_fn, collate_fn, collate_stack
 
 # indoor scene
 from .s3dis import S3DISDataset

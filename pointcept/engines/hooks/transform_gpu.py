@@ -636,7 +636,7 @@ class ChromaticAutoContrast(object):
         self.blend_factor = blend_factor
 
     def __call__(self, data_dict):
-        if "color" in data_dict and random.random() < self.p:
+        if "color" in data_dict.keys() and random.random() < self.p:
             color = data_dict["color"]
             lo = torch.min(color, dim=0, keepdim=True)[0]
             hi = torch.max(color, dim=0, keepdim=True)[0]
@@ -688,12 +688,19 @@ class ChromaticTranslation(object):
         self.p = p
         self.ratio = ratio
 
-    def __call__(self, data_dict):
+    def __call__(self, data_dict,_test_rand=None):
         if "color" in data_dict and random.random() < self.p:
             color = data_dict["color"]
-            tr = (torch.rand(1, 3, device="cuda") - 0.5) * 255 * 2 * self.ratio
+
+            # -- test rand --
+            if _test_rand is None: rand = torch.rand(1, 3, device="cuda")
+            else: rand = _test_rand
+
+            # -- xform --
+            tr = (rand - 0.5) * 255 * 2 * self.ratio
             color[:, :3] = torch.clamp(color[:, :3] + tr, 0, 255)
             data_dict["color"] = color
+
         return data_dict
     # def __init__(self, p=0.95, ratio=0.05):
     #     self.p = p

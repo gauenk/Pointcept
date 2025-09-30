@@ -75,7 +75,7 @@ def point_collate_fn(batch, mix_prob=0):
     return batch
 
 
-def collate_fn_gpu(batch):
+def collate_stack(batch):
     """
     collate function for point cloud which support dict and list,
     'coord' is necessary to determine 'offset'

@@ -391,7 +391,7 @@ class ChromaticAutoContrast(object):
         self.blend_factor = blend_factor
 
     def __call__(self, data_dict):
-        if "color" in data_dict.keys() and np.random.rand() < self.p:
+        if "color" in data_dict.keys() and random.random() < self.p:
             lo = np.min(data_dict["color"], 0, keepdims=True)
             hi = np.max(data_dict["color"], 0, keepdims=True)
             # print(data_dict['color'].min(),data_dict['color'].max())
@@ -408,7 +408,7 @@ class ChromaticAutoContrast(object):
             scale = np.where(diff < 1e-10, 1.0, 255.0 / diff)
             contrast_feat = (data_dict["color"][:, :3] - lo) * scale
             blend_factor = (
-                np.random.rand() if self.blend_factor is None else self.blend_factor
+                random.random() if self.blend_factor is None else self.blend_factor
             )
             data_dict["color"][:, :3] = (1 - blend_factor) * data_dict["color"][
                 :, :3
@@ -422,9 +422,15 @@ class ChromaticTranslation(object):
         self.p = p
         self.ratio = ratio
 
-    def __call__(self, data_dict):
-        if "color" in data_dict.keys() and np.random.rand() < self.p:
-            tr = (np.random.rand(1, 3) - 0.5) * 255 * 2 * self.ratio
+    def __call__(self, data_dict,_test_rand=None):
+        if "color" in data_dict.keys() and random.random() < self.p:
+
+            # -- test rand --
+            if _test_rand is None: rand = np.random.rand(1, 3)
+            else: rand = _test_rand
+
+            # -- xform --
+            tr = (rand - 0.5) * 255 * 2 * self.ratio
             data_dict["color"][:, :3] = np.clip(tr + data_dict["color"][:, :3], 0, 255)
         return data_dict
 
@@ -436,7 +442,7 @@ class ChromaticJitter(object):
         self.std = std
 
     def __call__(self, data_dict):
-        if "color" in data_dict.keys() and np.random.rand() < self.p:
+        if "color" in data_dict.keys() and random.random() < self.p:
             noise = np.random.randn(data_dict["color"].shape[0], 3)
             noise *= self.std * 255
             data_dict["color"][:, :3] = np.clip(
@@ -472,7 +478,7 @@ class RandomColorGrayScale(object):
         return gray
 
     def __call__(self, data_dict):
-        if np.random.rand() < self.p:
+        if random.random() < self.p:
             data_dict["color"] = self.rgb_to_grayscale(data_dict["color"], 3)
         return data_dict
 
@@ -637,13 +643,13 @@ class RandomColorJitter(object):
             if (
                 fn_id == 0
                 and brightness_factor is not None
-                and np.random.rand() < self.p
+                and random.random() < self.p
             ):
                 data_dict["color"] = self.adjust_brightness(
                     data_dict["color"], brightness_factor
                 )
             elif (
-                fn_id == 1 and contrast_factor is not None and np.random.rand() < self.p
+                fn_id == 1 and contrast_factor is not None and random.random() < self.p
             ):
                 data_dict["color"] = self.adjust_contrast(
                     data_dict["color"], contrast_factor
@@ -651,12 +657,12 @@ class RandomColorJitter(object):
             elif (
                 fn_id == 2
                 and saturation_factor is not None
-                and np.random.rand() < self.p
+                and random.random() < self.p
             ):
                 data_dict["color"] = self.adjust_saturation(
                     data_dict["color"], saturation_factor
                 )
-            elif fn_id == 3 and hue_factor is not None and np.random.rand() < self.p:
+            elif fn_id == 3 and hue_factor is not None and random.random() < self.p:
                 data_dict["color"] = self.adjust_hue(data_dict["color"], hue_factor)
         return data_dict
 
@@ -719,8 +725,8 @@ class HueSaturationTranslation(object):
         if "color" in data_dict.keys():
             # Assume color[:, :3] is rgb
             hsv = HueSaturationTranslation.rgb_to_hsv(data_dict["color"][:, :3])
-            hue_val = (np.random.rand() - 0.5) * 2 * self.hue_max
-            sat_ratio = 1 + (np.random.rand() - 0.5) * 2 * self.saturation_max
+            hue_val = (random.random() - 0.5) * 2 * self.hue_max
+            sat_ratio = 1 + (random.random() - 0.5) * 2 * self.saturation_max
             hsv[..., 0] = np.remainder(hue_val + hsv[..., 0] + 1, 1)
             hsv[..., 1] = np.clip(sat_ratio * hsv[..., 1], 0, 1)
             data_dict["color"][:, :3] = np.clip(
@@ -736,7 +742,7 @@ class RandomColorDrop(object):
         self.color_augment = color_augment
 
     def __call__(self, data_dict):
-        if "color" in data_dict.keys() and np.random.rand() < self.p:
+        if "color" in data_dict.keys() and random.random() < self.p:
             data_dict["color"] *= self.color_augment
         return data_dict
 

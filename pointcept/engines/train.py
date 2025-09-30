@@ -25,7 +25,7 @@ from tensorboardX import SummaryWriter
 from .defaults import create_ddp_model, worker_init_fn
 from .hooks import HookBase, build_hooks
 import pointcept.utils.comm as comm
-from pointcept.datasets import build_dataset, point_collate_fn, collate_fn, collate_fn_gpu
+from pointcept.datasets import build_dataset, point_collate_fn, collate_fn, collate_stack
 from pointcept.models import build_model
 from pointcept.utils.logger import get_root_logger
 from pointcept.utils.optimizer import build_optimizer
@@ -306,7 +306,7 @@ class Trainer(TrainerBase):
 
         # -- modifies transformations (ie put on the gpu) requires a new collate fn --
         if self.cfg.collate_fn_mode == "gpu":
-            _collate_fn = collate_fn_gpu
+            _collate_fn = collate_stack
         else:
             _collate_fn = partial(point_collate_fn, mix_prob=self.cfg.mix_prob)
 

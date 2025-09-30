@@ -3,6 +3,47 @@
    The exhausting but necessary step of testing all the GPU-based transformations
    to make sure they match the corresponding CPU-based transformationy
 
+
+   Please let AI be able to do this (reliably) soon....
+
+
+
+    NormalizeColor
+    NormalizeCoord
+    PositiveShift
+    CenterShift
+    RandomShift
+    PointClip
+    RandomDropout
+    RandomRotate
+    RandomRotateTargetAngle
+    RandomScale
+    RandomFlip
+    RandomJitter
+    ClipGaussianJitter
+
+
+    ChromaticAutoContrast
+    ChromaticTranslation
+    ChromaticJitter
+    RandomColorGrayScale
+
+    RandomColorJitter
+    HueSaturationTranslation
+    RandomColorDrop
+
+    ElasticDistortion
+
+    GridSample
+
+    SphereCrop
+    ShufflePoint
+    CropBoundary
+
+    ContrastiveViewsGenerator
+    MultiViewGenerator
+    InstanceParser
+
 """
 
 
@@ -11,6 +52,11 @@ import numpy as np
 import torch as th
 import random
 
+
+def set_random_seed(seed):
+    random.seed(seed)
+    th.random.manual_seed(seed)
+    np.random.seed(seed)
 
 def check_pair(d0,d1,keys=None):
     if keys is None:
@@ -77,8 +123,8 @@ def test_ChromaticAutoContrast(data_cpu,data_gpu):
     from pointcept.engines.hooks.transform_gpu import ChromaticAutoContrast as ChromaticAutoContrast_gpu
 
     # -- params --
-    seed = random.random()
-    p = 0.8#random.random()
+    seed = int(100*random.random())
+    p = 1.0 # always
     blend_factor = np.random.rand(3).reshape((1,3))
     blend_factor_gpu = th.from_numpy(blend_factor).cuda()
 
@@ -87,14 +133,45 @@ def test_ChromaticAutoContrast(data_cpu,data_gpu):
     xform_gpu = ChromaticAutoContrast_gpu(p,blend_factor_gpu)
 
     # -- run --
-    random.seed(seed)
+    set_random_seed(seed)
     data_cpu = xform_cpu(data_cpu)
-    random.seed(seed)
+    set_random_seed(seed)
     data_gpu = xform_gpu(data_gpu)
-    data_gpu = dict_to_numpy(data_gpu)
 
     # -- check --
+    data_gpu = dict_to_numpy(data_gpu)
     check_pair(data_cpu,data_gpu,['color'])
+
+
+def test_ChromaticTranslation(data_cpu,data_gpu):
+
+    # -- imports --
+    from pointcept.datasets.transform import ChromaticTranslation as ChromaticTranslation_cpu
+    from pointcept.engines.hooks.transform_gpu import ChromaticTranslation as ChromaticTranslation_gpu
+
+    # -- params --
+    seed = int(100*random.random())
+    p = 1.0 # always
+    ratio = 0.5*random.random()
+
+    # -- init --
+    xform_cpu = ChromaticTranslation_cpu(p,ratio)
+    xform_gpu = ChromaticTranslation_gpu(p,ratio)
+
+    # -- get rand --
+    rand_cpu = np.random.rand(1, 3)
+    rand_gpu = th.from_numpy(rand_cpu).cuda()
+
+    # -- run --
+    set_random_seed(seed)
+    data_cpu = xform_cpu(data_cpu,_test_rand=rand_cpu)
+    set_random_seed(seed)
+    data_gpu = xform_gpu(data_gpu,_test_rand=rand_gpu)
+
+    # -- check --
+    data_gpu = dict_to_numpy(data_gpu)
+    check_pair(data_cpu,data_gpu,['color'])
+
 
 def main():
 
@@ -104,7 +181,8 @@ def main():
     nchecks = 100
     for _ in range(nchecks):
         data_cpu,data_gpu = get_sample(train_loader)
-        test_ChromaticAutoContrast(data_cpu,data_gpu)
+        # test_ChromaticAutoContrast(data_cpu,data_gpu)
+        test_ChromaticTranslation(data_cpu,data_gpu)
 
 
 if __name__ == "__main__":
