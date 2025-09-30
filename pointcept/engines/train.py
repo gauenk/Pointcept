@@ -189,6 +189,7 @@ class Trainer(TrainerBase):
             auto_cast = torch.cuda.amp.autocast
 
         input_dict = self.comm_info["input_dict"]
+        # print("labels: ",input_dict['segment'].max())
         for key in input_dict.keys():
             if isinstance(input_dict[key], torch.Tensor):
                 input_dict[key] = input_dict[key].cuda(non_blocking=True)

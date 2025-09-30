@@ -551,3 +551,18 @@ class GarbageHandler(HookBase):
     def after_train(self):
         gc.collect()
         torch.cuda.empty_cache()
+
+
+
+
+from .transform_gpu import ComposeGpu
+
+@HOOKS.register_module()
+class TransformGPU(HookBase):
+    def __init__(self, transform): # gpu-based transforms
+        self.transform = ComposeGpu(transform)
+
+    def before_step(self):
+        input_dict = self.comm_info["input_dict"]
+        input_dict = self.transform(input_dict)
+        self.comm_info["input_dict"] = input_dict

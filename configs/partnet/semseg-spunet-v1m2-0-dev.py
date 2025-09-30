@@ -2,11 +2,13 @@
 
 _base_ = ["../_base_/default_runtime.py"]
 # misc custom setting
-batch_size = 4  # bs: total bs in all gpus
-num_worker = 1  # total worker in all gpu
+# batch_size = 48  # bs: total bs in all gpus
+batch_size = 64*3  # bs: total bs in all gpus
+num_worker = 4  # total worker in all gpu
 mix_prob = 0.0
 empty_cache = False
 enable_amp = True
+nclasses = 512
 
 # model settings
 model = dict(
@@ -14,7 +16,7 @@ model = dict(
     backbone=dict(
         type="SpUNet-v1m2",
         in_channels=3,
-        num_classes=256,
+        num_classes=nclasses,
         channels=(32, 64, 128, 256, 256, 128, 96, 96),
         layers=(2, 3, 4, 6, 2, 2, 2, 2),
         bn_momentum=0.1,
@@ -32,7 +34,7 @@ dataset_type = "PartNetDataset"
 data_root = "data/partnet"
 
 data = dict(
-    num_classes=256,
+    num_classes=nclasses,
     ignore_index=-1,
     # names=[
     #     "ceiling",
@@ -76,7 +78,7 @@ data = dict(
             # dict(type="RandomColorDrop", p=0.2, color_augment=0.0),
             dict(
                 type="GridSample",
-                grid_size=0.05,
+                grid_size=0.01,
                 hash_type="fnv",
                 mode="train",
                 return_grid_coord=True,
