@@ -221,10 +221,11 @@ class RandomDropout(object):
         self.dropout_ratio = dropout_ratio
         self.dropout_application_ratio = dropout_application_ratio
 
-    def __call__(self, data_dict):
+    def __call__(self, data_dict, _idx=None):
         if random.random() < self.dropout_application_ratio:
             n = len(data_dict["coord"])
-            idx = np.random.choice(n, int(n * (1 - self.dropout_ratio)), replace=False)
+            if _idx is None: idx = np.random.choice(n, int(n * (1 - self.dropout_ratio)), replace=False)
+            else: idx = _idx
             if "sampled_index" in data_dict:
                 # for ScanNet data efficient, we need to make sure labeled point is sampled.
                 idx = np.unique(np.append(idx, data_dict["sampled_index"]))
@@ -247,6 +248,7 @@ class RandomRotate(object):
     def __call__(self, data_dict):
         if random.random() > self.p:
             return data_dict
+
         angle = np.random.uniform(self.angle[0], self.angle[1]) * np.pi
         rot_cos, rot_sin = np.cos(angle), np.sin(angle)
         if self.axis == "x":
@@ -257,6 +259,7 @@ class RandomRotate(object):
             rot_t = np.array([[rot_cos, -rot_sin, 0], [rot_sin, rot_cos, 0], [0, 0, 1]])
         else:
             raise NotImplementedError
+
         if "coord" in data_dict.keys():
             if self.center is None:
                 x_min, y_min, z_min = data_dict["coord"].min(axis=0)
@@ -284,10 +287,13 @@ class RandomRotateTargetAngle(object):
         self.center = center
 
     def __call__(self, data_dict):
+
         if random.random() > self.p:
             return data_dict
+
         angle = np.random.choice(self.angle) * np.pi
         rot_cos, rot_sin = np.cos(angle), np.sin(angle)
+
         if self.axis == "x":
             rot_t = np.array([[1, 0, 0], [0, rot_cos, -rot_sin], [0, rot_sin, rot_cos]])
         elif self.axis == "y":
@@ -296,6 +302,7 @@ class RandomRotateTargetAngle(object):
             rot_t = np.array([[rot_cos, -rot_sin, 0], [rot_sin, rot_cos, 0], [0, 0, 1]])
         else:
             raise NotImplementedError
+
         if "coord" in data_dict.keys():
             if self.center is None:
                 x_min, y_min, z_min = data_dict["coord"].min(axis=0)
@@ -352,13 +359,15 @@ class RandomJitter(object):
         self.sigma = sigma
         self.clip = clip
 
-    def __call__(self, data_dict):
+    def __call__(self, data_dict,_randn=None):
         if "coord" in data_dict.keys():
-            jitter = np.clip(
-                self.sigma * np.random.randn(data_dict["coord"].shape[0], 3),
-                -self.clip,
-                self.clip,
-            )
+
+            if _randn is None:
+                randn = np.random.randn(data_dict["coord"].shape[0], 3)
+            else:
+                randn = _randn
+
+            jitter = np.clip(self.sigma * randn,-self.clip,self.clip)
             data_dict["coord"] += jitter
         return data_dict
 
@@ -367,16 +376,22 @@ class RandomJitter(object):
 class ClipGaussianJitter(object):
     def __init__(self, scalar=0.02, store_jitter=False):
         self.scalar = scalar
-        self.mean = np.mean(3)
+        # self.mean = np.mean(3) # too weird
+        self.mean = np.zeros(3)
         self.cov = np.identity(3)
         self.quantile = 1.96
         self.store_jitter = store_jitter
 
-    def __call__(self, data_dict):
+    def __call__(self, data_dict,_randn=None):
         if "coord" in data_dict.keys():
-            jitter = np.random.multivariate_normal(
-                self.mean, self.cov, data_dict["coord"].shape[0]
-            )
+
+            if _randn is None:
+                jitter = np.random.multivariate_normal(
+                    self.mean, self.cov, data_dict["coord"].shape[0]
+                )
+            else:
+                jitter = _randn
+
             jitter = self.scalar * np.clip(jitter / 1.96, -1, 1)
             data_dict["coord"] += jitter
             if self.store_jitter:
