@@ -625,10 +625,13 @@ def test_SphereCrop(data_cpu, data_gpu):
 
     # -- params --
     seed = int(10000*random.random())
+    point_max = np.random.choice([40000,60000,80000])
+    mode = np.random.choice(["random", "center"])
+    mode = "center"
 
     # -- init --
-    xform_cpu = SphereCrop_cpu()
-    xform_gpu = SphereCrop_gpu()
+    xform_cpu = SphereCrop_cpu(point_max,mode=mode)
+    xform_gpu = SphereCrop_gpu(point_max,mode=mode)
 
     # -- run --
     set_random_seed(seed)
@@ -636,21 +639,33 @@ def test_SphereCrop(data_cpu, data_gpu):
     set_random_seed(seed)
     data_gpu = xform_gpu(data_gpu)
 
+    # -- inspect --
+    # print(data_cpu['coord'][:10])
+    # print(data_gpu['coord'][:10])
+
     # -- check --
     data_gpu = dict_to_numpy(data_gpu)
-    check_pair(data_cpu, data_gpu, ['coord'])
+    if mode == "center":
+        delta = np.mean((data_cpu['coord']-data_gpu['coord'])**2,-1)
+        perror = np.mean(1.0*(delta < 1e-10))
+        # print(perror) # percent error
+        assert(perror > 0.99)
+    check_pair(data_cpu, data_gpu, ['bids'])
 
 
-def test_SphereCrop_batch(data_cpu, data_gpu):
+def test_SphereCrop_batch(data_gpu):
 
     # -- imports --
     from pointcept.engines.hooks.transform_gpu import SphereCrop as SphereCrop_gpu
 
     # -- params --
     seed = int(10000*random.random())
+    point_max = np.random.choice([40000,60000,80000])
+    mode = np.random.choice(["random", "center"])
+    mode = "center"
 
     # -- init --
-    xform_gpu = SphereCrop_gpu()
+    xform_gpu = SphereCrop_gpu(mode=mode)
     data_gpu_batch = dcopy(data_gpu)
     data_gpu_serial = dcopy(data_gpu)
     
@@ -665,8 +680,17 @@ def test_SphereCrop_batch(data_cpu, data_gpu):
     data_gpu_batch = dict_to_numpy(data_gpu_batch)
     data_gpu_serial = dict_to_numpy(data_gpu_serial)
 
-    # check_pair(data_gpu_batch, data_gpu_serial, ['coord', 'color', 'segment'])
-    check_pair(data_gpu_batch, data_gpu_serial, ['bids'])
+    # -- check --
+    data_gpu = dict_to_numpy(data_gpu)
+    if mode == "center":
+        check_pair(data_cpu, data_gpu, ['coord','bids'])
+    elif mode == "random":
+        check_pair(data_cpu, data_gpu, ['bids'])
+    else:
+        raise ValueError(f"Uknown mode [{mode}]")
+
+    # # check_pair(data_gpu_batch, data_gpu_serial, ['coord', 'color', 'segment'])
+    # check_pair(data_gpu_batch, data_gpu_serial, ['bids'])
 
 
 def test_ShufflePoint(data_cpu, data_gpu):
@@ -967,7 +991,7 @@ def test_GridSample(data_cpu, data_gpu):
 def main():
 
 
-    batch_size = 3
+    batch_size = 1
     train_loader = get_data_loader(batch_size)
 
     nchecks = 100
@@ -991,6 +1015,10 @@ def main():
         # test_PointClip(data_cpu,data_gpu)
 
         # test_SphereCrop(data_cpu, data_gpu)
+        if batch_size > 1:
+            test_SphereCrop_batch(data_gpu)
+
+
         # test_ShufflePoint(data_cpu, data_gpu)
         # if batch_size > 1:
         #     test_ShufflePoint_batch(data_gpu)

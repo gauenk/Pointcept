@@ -68,46 +68,47 @@ def randperm_sel_by_bids(bids,offset,keep_n):
         n = bids.shape[0]
         return torch.randperm(n, device="cuda")[:keep_n]
 
-    # print("."*20)
-    dev = bids.device
-    # print(bids.shape,offset)
+    # # print("."*20)
+    # dev = bids.device
+    # # print(bids.shape,offset)
 
-    # Total number of elements to keep
-    total = keep_n.sum()
+    # # Total number of elements to keep
+    # total = keep_n.sum()
     
-    # Step 1: create a flat "local index" tensor
-    # repeat each index 0..max(keep_n)-1, then mask out excess
-    max_keep = keep_n.max()
-    arange = torch.arange(max_keep,device=dev)
-    indices = arange.repeat(len(keep_n))
-    mask = arange.unsqueeze(0) < keep_n.unsqueeze(1)
-    indices = indices[mask.flatten()]
-    # print("."*20)
-    # print(local_idx)
-    # print(local_idx[keep_n[0]-3:keep_n[0]+3])
-    # print(local_idx[keep_n[1]-3:keep_n[1]+3])
-    # print("."*20)
+    # # Step 1: create a flat "local index" tensor
+    # # repeat each index 0..max(keep_n)-1, then mask out excess
+    # max_keep = keep_n.max()
+    # arange = torch.arange(max_keep,device=dev)
+    # indices = arange.repeat(len(keep_n))
+    # mask = arange.unsqueeze(0) < keep_n.unsqueeze(1)
+    # indices = indices[mask.flatten()]
+    # # print("."*20)
+    # # print(local_idx)
+    # # print(local_idx[keep_n[0]-3:keep_n[0]+3])
+    # # print(local_idx[keep_n[1]-3:keep_n[1]+3])
+    # # print("."*20)
     
-    # -- Offset with cumulative sum --
-    # print(indices.shape)
-    # print(keep_n)
-    # print("^"*20)
+    # # -- Offset with cumulative sum --
+    # # print(indices.shape)
+    # # print(keep_n)
+    # # print("^"*20)
 
-    csum = th.cumsum(offset,0)[:-1]
-    csum = csum.repeat_interleave(keep_n[1:])
-    indices[keep_n[0]:] = indices[keep_n[0]:] + csum
-    # print(indices.min(),indices.max(),indices.shape)
-    # print(keep_n,keep_n.sum())
-    # print(bids.shape)
+    # csum = th.cumsum(offset,0)[:-1]
+    # csum = csum.repeat_interleave(keep_n[1:])
+    # indices[keep_n[0]:] = indices[keep_n[0]:] + csum
+    # # print(indices.min(),indices.max(),indices.shape)
+    # # print(keep_n,keep_n.sum())
+    # # print(bids.shape)
 
-    # -- simple impl --
-    # tensor = []
-    # for b in range(B):
-    #     start = offset[b]
-    #     tensor.append(th.arange(start,start+keep_n[b]))
-    # tensor = th.cat(tensor)
+    # # -- simple impl --
+    # # tensor = []
+    # # for b in range(B):
+    # #     start = offset[b]
+    # #     tensor.append(th.arange(start,start+keep_n[b]))
+    # # tensor = th.cat(tensor)
 
     # randperm per batch
+    indices = slice_by_bids(bids,offset,keep_n)
     N = bids.shape[0]
     rand = torch.rand(N, device=bids.device, dtype=th.float64)
     keys = bids.to(torch.float64) * (N + 1) + rand
@@ -115,6 +116,44 @@ def randperm_sel_by_bids(bids,offset,keep_n):
     return shuffle_index[indices]
 
 
+def slice_by_bids(bids,offset,keep_n):
+    """
+
+    Often we want
+
+    input_data['coord'][:keep_n]
+
+    But we also want
+
+    [input_data['coord'][b,:keep_n[b]] for b in range(B)]
+
+    But if B is big, then iteration is unappealing
+
+    """
+    
+    # print(keep_n)
+    if len(keep_n) == 1:
+        return th.arange(keep_n.item(),device=bids.device)
+
+    # print("."*20)
+    dev = bids.device
+
+    # Total number of elements to keep
+    total = keep_n.sum()
+    
+    # Step 1: create a flat "local index" tensor
+    max_keep = keep_n.max()
+    arange = torch.arange(max_keep,device=dev)
+    indices = arange.repeat(len(keep_n))
+    mask = arange.unsqueeze(0) < keep_n.unsqueeze(1)
+    indices = indices[mask.flatten()]
+    
+    # -- Offset with cumulative sum --
+    csum = th.cumsum(offset,0)[:-1]
+    csum = csum.repeat_interleave(keep_n[1:])
+    indices[keep_n[0]:] = indices[keep_n[0]:] + csum
+
+    return indices
 
 
 @TRANSFORMS_GPU.register_module()
@@ -1924,21 +1963,57 @@ class SphereCrop(object):
         )
 
         assert "coord" in data_dict.keys()
+
+        B = len(data_dict["offset"])
         if data_dict["coord"].shape[0] > point_max:
             if self.mode == "random":
+
+                idx = torch.randint(
+                    0, data_dict["coord"].shape[0], (1,),
+                    device=data_dict["coord"].device
+                ).item()
+
+                
                 idx = torch.randint(
                     0, data_dict["coord"].shape[0], (1,),
                     device=data_dict["coord"].device
                 ).item()
                 center = data_dict["coord"][idx]
             elif self.mode == "center":
-                center = data_dict["coord"][data_dict["coord"].shape[0] // 2]
+                csum = th.cumsum(data_dict['offset'],dim=0)
+                midpoint = csum - data_dict['offset']//2 - 1
+                # print(csum,midpoint,data_dict['offset']//2,data_dict["coord"].shape)
+                center = data_dict["coord"][midpoint]
+                if B > 1:
+                    center = center.repeat_interleave(data_dict['offset'],dim=0)
+                else:
+                    center = center.reshape(1,3)
+                # print(center.shape)
             else:
                 raise NotImplementedError
 
             # Compute squared distances from center
+            # distances = torch.sum(torch.square(data_dict["coord"] - center), dim=1)
+            # idx_crop = torch.argsort(distances)[:point_max]
+
+            # Compute squared distances from center
+
+            # print(data_dict["coord"].shape)
+            # print(center,center.shape,data_dict['coord'].shape)
+
+            bids = data_dict['bids']
             distances = torch.sum(torch.square(data_dict["coord"] - center), dim=1)
-            idx_crop = torch.argsort(distances)[:point_max]
+            max_dist = distances.max()+1
+            distances = bids*max_dist + distances # silly but simple
+            idx_crop = torch.argsort(distances)
+
+            keep_n = th.tensor([point_max,]*B,device=bids.device)
+            indices = slice_by_bids(bids,data_dict['offset'],keep_n)
+            idx_crop = idx_crop[indices]
+            # print(distances[idx_crop])
+            # print(idx_crop)
+
+
             data_dict = index_operator(data_dict, idx_crop)
         return data_dict
 
