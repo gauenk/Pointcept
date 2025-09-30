@@ -25,7 +25,7 @@ from tensorboardX import SummaryWriter
 from .defaults import create_ddp_model, worker_init_fn
 from .hooks import HookBase, build_hooks
 import pointcept.utils.comm as comm
-from pointcept.datasets import build_dataset, point_collate_fn, collate_fn
+from pointcept.datasets import build_dataset, point_collate_fn, collate_fn, collate_fn_gpu
 from pointcept.models import build_model
 from pointcept.utils.logger import get_root_logger
 from pointcept.utils.optimizer import build_optimizer
@@ -188,8 +188,12 @@ class Trainer(TrainerBase):
             # deprecated warning
             auto_cast = torch.cuda.amp.autocast
 
-        input_dict = self.comm_info["input_dict"]
+        # -- [dev] inspect --
+        # print(input_dict['coord'].shape)
+        # exit()
+
         # print("labels: ",input_dict['segment'].max())
+        input_dict = self.comm_info["input_dict"]
         for key in input_dict.keys():
             if isinstance(input_dict[key], torch.Tensor):
                 input_dict[key] = input_dict[key].cuda(non_blocking=True)
@@ -300,13 +304,20 @@ class Trainer(TrainerBase):
             else None
         )
 
+        # -- modifies transformations (ie put on the gpu) requires a new collate fn --
+        if self.cfg.collate_fn_mode == "gpu":
+            _collate_fn = collate_fn_gpu
+        else:
+            _collate_fn = partial(point_collate_fn, mix_prob=self.cfg.mix_prob)
+
+        # -- loader! --
         train_loader = torch.utils.data.DataLoader(
             train_data,
             batch_size=self.cfg.batch_size_per_gpu,
             shuffle=(train_sampler is None),
             num_workers=self.cfg.num_worker_per_gpu,
             sampler=train_sampler,
-            collate_fn=partial(point_collate_fn, mix_prob=self.cfg.mix_prob),
+            collate_fn=_collate_fn,
             pin_memory=True,
             worker_init_fn=init_fn,
             drop_last=len(train_data) > self.cfg.batch_size,
@@ -315,6 +326,14 @@ class Trainer(TrainerBase):
         return train_loader
 
     def build_val_loader(self):
+
+        # -- currently, only modify transformations (and thus collate fn) for training --
+        if self.cfg.collate_fn_mode == "gpu":
+            _collate_fn = collate_fn
+        else:
+            _collate_fn = collate_fn
+            
+        # -- get that loader [optionally]! --
         val_loader = None
         if self.cfg.evaluate:
             val_data = build_dataset(self.cfg.data.val)

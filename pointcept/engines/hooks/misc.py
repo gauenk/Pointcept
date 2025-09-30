@@ -563,6 +563,6 @@ class TransformGPU(HookBase):
         self.transform = ComposeGpu(transform)
 
     def before_step(self):
-        input_dict = self.comm_info["input_dict"]
+        input_dict = self.trainer.comm_info["input_dict"]
         input_dict = self.transform(input_dict)
-        self.comm_info["input_dict"] = input_dict
+        self.trainer.comm_info["input_dict"] = input_dict

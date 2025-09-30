@@ -13,6 +13,8 @@ import scipy.interpolate
 import scipy.stats
 import numpy as np
 import torch
+import torch as th
+import torch.nn.functional as thF
 import copy
 from collections.abc import Sequence, Mapping
 
@@ -33,6 +35,7 @@ def index_operator(data_dict, index, duplicate=False):
             "strength",
             "segment",
             "instance",
+            "bids"
         ]
     if not duplicate:
         for key in data_dict["index_valid_keys"]:
@@ -141,7 +144,7 @@ class ToTensor(object):
 class NormalizeColor(object):
     def __call__(self, data_dict):
         if "color" in data_dict:
-            data_dict["color"] = data_dict["color"].to("cuda") / 255.0
+            data_dict["color"] = data_dict["color"] / 255.0
         return data_dict
 
 
@@ -149,7 +152,7 @@ class NormalizeColor(object):
 class NormalizeCoord(object):
     def __call__(self, data_dict):
         if "coord" in data_dict:
-            coords = data_dict["coord"].to("cuda")
+            coords = data_dict["coord"]
             centroid = coords.mean(dim=0, keepdim=True)
             coords = coords - centroid
             scale = torch.max(torch.sqrt(torch.sum(coords ** 2, dim=1)))
@@ -162,7 +165,7 @@ class NormalizeCoord(object):
 class PositiveShift(object):
     def __call__(self, data_dict):
         if "coord" in data_dict:
-            coords = data_dict["coord"].to("cuda")
+            coords = data_dict["coord"]
             coord_min = coords.min(dim=0, keepdim=True)[0]
             coords = coords - coord_min
             data_dict["coord"] = coords
@@ -176,7 +179,7 @@ class CenterShift(object):
 
     def __call__(self, data_dict):
         if "coord" in data_dict:
-            coords = data_dict["coord"].to("cuda")
+            coords = data_dict["coord"]
             coord_min = coords.min(dim=0)[0]
             coord_max = coords.max(dim=0)[0]
 
@@ -245,7 +248,7 @@ class RandomShift(object):
 
     def __call__(self, data_dict):
         if "coord" in data_dict:
-            coords = data_dict["coord"].to("cuda")
+            coords = data_dict["coord"]
             shift_x = torch.empty(1, device="cuda").uniform_(self.shift[0][0], self.shift[0][1])
             shift_y = torch.empty(1, device="cuda").uniform_(self.shift[1][0], self.shift[1][1])
             shift_z = torch.empty(1, device="cuda").uniform_(self.shift[2][0], self.shift[2][1])
@@ -262,7 +265,7 @@ class PointClip(object):
 
     def __call__(self, data_dict):
         if "coord" in data_dict:
-            coords = data_dict["coord"].to("cuda")
+            coords = data_dict["coord"]
             a_min = torch.tensor(self.point_cloud_range[:3], device="cuda", dtype=coords.dtype)
             a_max = torch.tensor(self.point_cloud_range[3:], device="cuda", dtype=coords.dtype)
             coords = torch.clamp(coords, min=a_min, max=a_max)
@@ -309,7 +312,7 @@ class RandomDropout(object):
 
     def __call__(self, data_dict):
         if random.random() < self.dropout_application_ratio:
-            coords = data_dict["coord"].to("cuda")
+            coords = data_dict["coord"]
             n = coords.shape[0]
             keep_n = int(n * (1 - self.dropout_ratio))
 
@@ -364,7 +367,7 @@ class RandomRotate(object):
             raise NotImplementedError
 
         if "coord" in data_dict:
-            coords = data_dict["coord"].to("cuda")
+            coords = data_dict["coord"]
             if self.center is None:
                 center = coords.mean(dim=0)
             else:
@@ -376,7 +379,7 @@ class RandomRotate(object):
             data_dict["coord"] = coords
 
         if "normal" in data_dict:
-            normals = data_dict["normal"].to("cuda")
+            normals = data_dict["normal"]
             normals = torch.matmul(normals, rot_t.T)
             data_dict["normal"] = normals
 
@@ -415,7 +418,7 @@ class RandomRotateTargetAngle(object):
             raise NotImplementedError
 
         if "coord" in data_dict:
-            coords = data_dict["coord"].to("cuda")
+            coords = data_dict["coord"]
             if self.center is None:
                 center = coords.min(dim=0)[0] + (coords.max(dim=0)[0] - coords.min(dim=0)[0]) / 2
             else:
@@ -427,7 +430,7 @@ class RandomRotateTargetAngle(object):
             data_dict["coord"] = coords
 
         if "normal" in data_dict:
-            normals = data_dict["normal"].to("cuda")
+            normals = data_dict["normal"]
             normals = torch.matmul(normals, rot_t.T)
             data_dict["normal"] = normals
 
@@ -481,7 +484,7 @@ class RandomScale(object):
 
     def __call__(self, data_dict):
         if "coord" in data_dict:
-            coords = data_dict["coord"].to("cuda")
+            coords = data_dict["coord"]
             if self.anisotropic:
                 scale = torch.empty(3, device="cuda").uniform_(self.scale[0], self.scale[1])
             else:
@@ -514,11 +517,11 @@ class RandomFlip(object):
         normals = data_dict.get("normal")
 
         if coords is not None:
-            coords = coords.to("cuda")
+            coords = coords
             if random.random() < self.p:
                 coords[:, 0] = -coords[:, 0]
                 if normals is not None:
-                    normals = normals.to("cuda")
+                    normals = normals
                     normals[:, 0] = -normals[:, 0]
             if random.random() < self.p:
                 coords[:, 1] = -coords[:, 1]
@@ -556,7 +559,7 @@ class RandomJitter(object):
 
     def __call__(self, data_dict):
         if "coord" in data_dict:
-            coords = data_dict["coord"].to("cuda")
+            coords = data_dict["coord"]
             jitter = torch.randn(coords.shape, device="cuda") * self.sigma
             jitter = torch.clamp(jitter, -self.clip, self.clip)
             coords = coords + jitter
@@ -590,7 +593,7 @@ class ClipGaussianJitter(object):
 
     def __call__(self, data_dict):
         if "coord" in data_dict:
-            coords = data_dict["coord"].to("cuda")
+            coords = data_dict["coord"]
             n_points = coords.shape[0]
 
             # Sample from standard normal
@@ -634,7 +637,7 @@ class ChromaticAutoContrast(object):
 
     def __call__(self, data_dict):
         if "color" in data_dict and random.random() < self.p:
-            color = data_dict["color"].to("cuda")
+            color = data_dict["color"]
             lo = torch.min(color, dim=0, keepdim=True)[0]
             hi = torch.max(color, dim=0, keepdim=True)[0]
 
@@ -687,7 +690,7 @@ class ChromaticTranslation(object):
 
     def __call__(self, data_dict):
         if "color" in data_dict and random.random() < self.p:
-            color = data_dict["color"].to("cuda")
+            color = data_dict["color"]
             tr = (torch.rand(1, 3, device="cuda") - 0.5) * 255 * 2 * self.ratio
             color[:, :3] = torch.clamp(color[:, :3] + tr, 0, 255)
             data_dict["color"] = color
@@ -711,7 +714,7 @@ class ChromaticJitter(object):
 
     def __call__(self, data_dict):
         if "color" in data_dict and random.random() < self.p:
-            color = data_dict["color"].to("cuda")
+            color = data_dict["color"]
             noise = torch.randn(color.shape[0], 3, device="cuda") * self.std * 255
             color[:, :3] = torch.clamp(color[:, :3] + noise, 0, 255)
             data_dict["color"] = color
@@ -754,7 +757,7 @@ class RandomColorGrayScale(object):
 
     def __call__(self, data_dict):
         if "color" in data_dict and random.random() < self.p:
-            color = data_dict["color"].to("cuda")
+            color = data_dict["color"]
             data_dict["color"] = self.rgb_to_grayscale(color, num_output_channels=3)
         return data_dict
     # def __init__(self, p):
@@ -1445,11 +1448,11 @@ class ElasticDistortion(object):
                 channel = noise[..., dim_idx].unsqueeze(0).unsqueeze(0)
 
                 # Apply blur in x direction
-                channel = F.conv3d(channel, blurx, padding=(1, 0, 0))
+                channel = thF.conv3d(channel, blurx, padding=(1, 0, 0))
                 # Apply blur in y direction
-                channel = F.conv3d(channel, blury, padding=(0, 1, 0))
+                channel = thF.conv3d(channel, blury, padding=(0, 1, 0))
                 # Apply blur in z direction
-                channel = F.conv3d(channel, blurz, padding=(0, 0, 1))
+                channel = thF.conv3d(channel, blurz, padding=(0, 0, 1))
 
                 noise[..., dim_idx] = channel.squeeze(0).squeeze(0)
 
@@ -1472,7 +1475,7 @@ class ElasticDistortion(object):
         sample_coords = sample_coords[..., [2, 1, 0]]
 
         # Interpolate
-        interpolated = F.grid_sample(
+        interpolated = thF.grid_sample(
             noise_grid, 
             sample_coords, 
             mode='bilinear', 
@@ -1579,46 +1582,68 @@ class GridSample(object):
 
     def __call__(self, data_dict):
         assert "coord" in data_dict.keys()
-        # scaled_coord = data_dict["coord"] / np.array(self.grid_size)
+
+        # -- get coordinates --
         scaled_coord = data_dict["coord"] / self.grid_size
-        grid_coord = th.floor(scaled_coord).astype(int)
-        min_coord = grid_coord.min(0)
+        grid_coord = th.floor(scaled_coord).to(th.int32)
+        min_coord = grid_coord.min(0).values[None,:]
         grid_coord -= min_coord
         scaled_coord -= min_coord
-        # min_coord = min_coord * np.array(self.grid_size)
         min_coord = min_coord * self.grid_size
 
+        # -- cat with batch indices --
+        bids = data_dict['bids'][:,None]
+        # print(grid_coord.shape)
+        # print(bids.shape)
+        grid_coord = th.cat([bids,grid_coord],dim=-1)
 
-        # -- so far --
+        # -- get hash --
         from spconv.pytorch.hash import HashTable
         dev = grid_coord.device
         N = grid_coord.shape[0]
         key = self.hash(grid_coord)
         table = HashTable(dev,torch.int64,torch.int64, max_size=2*N)
         table.insert(key, torch.arange(N, device=dev, dtype=torch.int64))
-        a,b = table.items()
-        print(a.shape,b.shape)
-        exit()
-        # inds,_ = tabel.query(key)
+        table.assign_arange_()
+        inverse,_ = table.query(key)
+        # print(inverse.shape,inverse.min(),inverse.max())
+        grid_coord = grid_coord[:,1:]
+
+        # print(idx.shape,idx.min(),idx.max())
+        # print(idx)
 
         # -- goal --
-        idx_sort = np.argsort(key)
-        key_sort = key[idx_sort]
-        _, inverse, count = np.unique(key_sort, return_inverse=True, return_counts=True)
-        idx_select = (
-            np.cumsum(np.insert(count, 0, 0)[0:-1])
-            + np.random.randint(0, count.max(), count.size) % count
-        )
-
-
+        # idx_sort = np.argsort(key)
+        # key_sort = key[idx_sort]
+        # _, inverse, count = np.unique(key_sort, return_inverse=True, return_counts=True)
+        # idx_select = (
+        #     np.cumsum(np.insert(count, 0, 0)[0:-1])
+        #     + np.random.randint(0, count.max(), count.size) % count
+        # )
 
         if self.mode == "train":  # train mode
-            idx_select = (
-                np.cumsum(np.insert(count, 0, 0)[0:-1])
-                + np.random.randint(0, count.max(), count.size) % count
-            )
-            idx_unique = idx_sort[idx_select]
-            if "sampled_index" in data_dict:
+
+            # -- select an index; pick randomly from the repeated values --
+            # idx_select = (
+            #     np.cumsum(np.insert(count, 0, 0)[0:-1])
+            #     + np.random.randint(0, count.max(), count.size) % count
+            # )
+
+            # -- get inds --
+            NumUniq = inverse.max().item()+1
+            idx_select = NumUniq*th.ones(NumUniq,device=dev,dtype=inverse.dtype)
+            idx_select = idx_select.scatter_reduce(0, inverse, torch.arange(N, device=inverse.device),
+                                            reduce="amin", include_self=True)
+            idx_unique = inverse[idx_select]
+
+            # -- check --
+            # len0 = len(th.unique(grid_coord[idx_unique],dim=0))
+            # len1 = len(th.unique(key[idx_unique]))
+            # len2 = len(th.unique(grid_coord[idx_unique],dim=0))
+            # print(len0,len1,len2)
+            # exit()
+
+            if "sampled_index" in data_dict: # not implemented
                 # for ScanNet data efficient, we need to make sure labeled point is sampled.
                 idx_unique = np.unique(
                     np.append(idx_unique, data_dict["sampled_index"])
@@ -1628,7 +1653,7 @@ class GridSample(object):
                 data_dict["sampled_index"] = np.where(mask[idx_unique])[0]
             data_dict = index_operator(data_dict, idx_unique)
             if self.return_inverse:
-                data_dict["inverse"] = np.zeros_like(inverse)
+                data_dict["inverse"] = th.zeros_like(inverse)
                 data_dict["inverse"][idx_sort] = inverse
             if self.return_grid_coord:
                 data_dict["grid_coord"] = grid_coord[idx_unique]
@@ -1650,6 +1675,13 @@ class GridSample(object):
             return data_dict
 
         elif self.mode == "test":  # test mode
+
+            # -- get counts --
+            idx_sort = th.argsort(key)
+            key_sort = key[idx_sort]
+            count = th.bincount(inds)
+            idx_base = th.cumsum(count)
+
             data_part_list = []
             for i in range(count.max()):
                 idx_select = np.cumsum(np.insert(count, 0, 0)[0:-1]) + i % count
@@ -1701,22 +1733,36 @@ class GridSample(object):
         return keys
 
     @staticmethod
-    def fnv_hash_vec(arr):
+    def fnv_hash_vec(arr: torch.Tensor) -> torch.Tensor:
         """
-        FNV64-1A
+        60-bit FNV-style hash for a 2D tensor (N, D) on GPU.
+        Emulates FNV-1a using int64 with 60-bit wraparound.
         """
         assert arr.ndim == 2
-        # Floor first for negative coordinates
-        arr = arr.copy()
-        arr = arr.astype(np.uint64, copy=False)
-        hashed_arr = np.uint64(14695981039346656037) * np.ones(
-            arr.shape[0], dtype=np.uint64
+        if arr.dtype != torch.int64:
+            arr = arr.to(torch.int64)
+    
+        # Constants
+        FNV_offset_basis = 0xCBF29CE484222325 >> 4  # take top 60 bits
+        FNV_prime = 1099511628211
+        mask60 = (1 << 60) - 1  # mask for 60 bits
+    
+        # Initialize hash
+        hashed = torch.full(
+            (arr.shape[0],),
+            FNV_offset_basis,
+            dtype=torch.int64,
+            device=arr.device
         )
+    
+        # Hash loop
         for j in range(arr.shape[1]):
-            hashed_arr *= np.uint64(1099511628211)
-            hashed_arr = np.bitwise_xor(hashed_arr, arr[:, j])
-        return hashed_arr
-
+            hashed = (hashed * FNV_prime) & mask60
+            hashed = hashed ^ arr[:, j]
+    
+        return hashed
+    
+    
 @TRANSFORMS_GPU.register_module()
 class SphereCrop(object):
     """GPU-accelerated Sphere Crop for point clouds"""
@@ -2062,6 +2108,10 @@ class ComposeGpu(object):
             self.transforms.append(TRANSFORMS_GPU.build(t_cfg))
 
     def __call__(self, data_dict):
+
+        for key in data_dict:
+            data_dict[key] = data_dict[key].cuda()
+
         for t in self.transforms:
             data_dict = t(data_dict)
         return data_dict

@@ -19,6 +19,8 @@ from timm.layers import trunc_normal_
 from pointcept.models.builder import MODELS
 from pointcept.models.utils import offset2batch
 
+import socket
+device_name = socket.gethostname()
 
 class BasicBlock(spconv.SparseModule):
     expansion = 1
@@ -110,11 +112,12 @@ class SpUNetBase(nn.Module):
         norm_fn = partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01)
         block = BasicBlock
 
+        _ksize = 3 if "laptop" in device_name.lower() else 5
         self.conv_input = spconv.SparseSequential(
             spconv.SubMConv3d(
                 in_channels,
                 base_channels,
-                kernel_size=5,
+                kernel_size=_ksize,
                 padding=1,
                 bias=False,
                 indice_key="stem",
@@ -303,11 +306,12 @@ class SpUNetNoSkipBase(nn.Module):
         norm_fn = partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01)
         block = BasicBlock
 
+        _ksize = 3 if "laptop" in device_name.lower() else 5
         self.conv_input = spconv.SparseSequential(
             spconv.SubMConv3d(
                 in_channels,
                 base_channels,
-                kernel_size=5,
+                kernel_size=_ksize,
                 padding=1,
                 bias=False,
                 indice_key="stem",
