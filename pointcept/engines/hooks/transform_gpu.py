@@ -249,10 +249,10 @@ class RandomShift(object):
     def __call__(self, data_dict):
         if "coord" in data_dict:
             coords = data_dict["coord"]
-            shift_x = torch.empty(1, device="cuda").uniform_(self.shift[0][0], self.shift[0][1])
-            shift_y = torch.empty(1, device="cuda").uniform_(self.shift[1][0], self.shift[1][1])
-            shift_z = torch.empty(1, device="cuda").uniform_(self.shift[2][0], self.shift[2][1])
-            shift_vec = torch.cat([shift_x, shift_y, shift_z]).to("cuda")
+            shift_x = np.random.uniform(self.shift[0][0], self.shift[0][1])
+            shift_y = np.random.uniform(self.shift[1][0], self.shift[1][1])
+            shift_z = np.random.uniform(self.shift[2][0], self.shift[2][1])
+            shift_vec = torch.tensor([shift_x, shift_y, shift_z],device="cuda")
             coords = coords + shift_vec
             data_dict["coord"] = coords
         return data_dict
