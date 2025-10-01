@@ -75,6 +75,20 @@ def set_random_seed(seed):
     th.random.manual_seed(seed)
     np.random.seed(seed)
 
+def sort_by_coordinate(data):
+
+    bids = data['bids']
+    coord = data['grid_coord']
+    X,Y,Z = coord.max(0)+1
+    # print(X,Y,Z)
+    
+    sort_idx = bids*X*Y*Z + coord[:,0] * Y * Z + coord[:,1] * Z + coord[:,2]
+    sort_idx = np.argsort(sort_idx)
+
+    for key in data:
+        if key in ["offset","index_valid_keys"]: continue
+        data[key] = data[key][sort_idx]
+
 def check_pair(d0,d1,keys=None):
     if keys is None:
         keys = list(d0.keys())
@@ -487,6 +501,42 @@ def test_RandomRotate(data_cpu, data_gpu):
     check_pair(data_cpu, data_gpu, ['coord','normal'])
 
 
+def test_RandomRotate_batch(data_gpu):
+
+    # -- imports --
+    from pointcept.engines.hooks.transform_gpu import RandomRotate as RandomRotate_gpu
+
+    # -- params --
+    seed = int(10000*random.random())
+    angle = random.random()
+    # angle = [-angle,angle]
+    angle = [angle,angle] # ensure same angle; limited testing but still checks rotations
+    axis = np.random.choice(["x","y","z"])
+    center = None
+    p = 1.0 # actually always run
+
+    # -- init --
+    xform_gpu = RandomRotate_gpu(angle=angle,center=center,axis=axis,p=p)
+    data_gpu_batch = dcopy(data_gpu)
+    data_gpu_serial = dcopy(data_gpu)
+    
+    # -- run --
+    set_random_seed(seed)
+    data_gpu_batch = xform_gpu(data_gpu_batch)
+    th.cuda.synchronize()
+    set_random_seed(seed)
+    data_gpu_serial = run_serially(xform_gpu,data_gpu_serial)
+    
+    # -- check --
+    data_gpu = dict_to_numpy(data_gpu)
+    data_gpu_batch = dict_to_numpy(data_gpu_batch)
+    data_gpu_serial = dict_to_numpy(data_gpu_serial)
+
+    # -- check --
+    check_pair(data_gpu_batch, data_gpu_serial, ['coord','normal'])
+    # check_pair(data_gpu, data_gpu_serial, ['coord','normal']) # ensure fails
+
+
 def test_RandomRotateTargetAngle(data_cpu, data_gpu):
 
     # -- imports --
@@ -540,6 +590,39 @@ def test_RandomScale(data_cpu, data_gpu):
     check_pair(data_cpu, data_gpu, ['coord'])
 
 
+def test_RandomScale_batch(data_gpu):
+
+    # -- imports --
+    from pointcept.engines.hooks.transform_gpu import RandomScale as RandomScale_gpu
+
+    # -- params --
+    seed = int(10000*random.random())
+    scale = 0.2 * random.random()
+    scale = [1 - scale, 1 + scale]
+    anisotropic = random.random() < 0.5
+
+    # -- init --
+    xform_gpu = RandomScale_gpu(scale,anisotropic)
+    data_gpu_batch = dcopy(data_gpu)
+    data_gpu_serial = dcopy(data_gpu)
+    
+    # -- run --
+    set_random_seed(seed)
+    data_gpu_batch = xform_gpu(data_gpu_batch)
+    th.cuda.synchronize()
+    set_random_seed(seed)
+    data_gpu_serial = run_serially(xform_gpu,data_gpu_serial)
+    
+    # -- check --
+    data_gpu = dict_to_numpy(data_gpu)
+    data_gpu_batch = dict_to_numpy(data_gpu_batch)
+    data_gpu_serial = dict_to_numpy(data_gpu_serial)
+
+    # -- check --
+    check_pair(data_gpu_batch, data_gpu_serial, ['coord','normal'])
+    # check_pair(data_gpu, data_gpu_serial, ['coord','normal']) # ensure fails
+
+
 def test_RandomFlip(data_cpu, data_gpu):
 
     # -- imports --
@@ -548,8 +631,8 @@ def test_RandomFlip(data_cpu, data_gpu):
 
     # -- params --
     seed = int(10000*random.random())
-    xform_cpu = RandomFlip_cpu()
-    xform_gpu = RandomFlip_gpu()
+    xform_cpu = RandomFlip_cpu(p=1.0)
+    xform_gpu = RandomFlip_gpu(p=1.0)
 
     # -- run --
     set_random_seed(seed)
@@ -560,6 +643,35 @@ def test_RandomFlip(data_cpu, data_gpu):
     # -- check --
     data_gpu = dict_to_numpy(data_gpu)
     check_pair(data_cpu, data_gpu, ['coord'])
+
+def test_RandomFlip_batch(data_gpu):
+
+    # -- imports --
+    from pointcept.engines.hooks.transform_gpu import RandomFlip as RandomFlip_gpu
+
+    # -- params --
+    seed = int(10000*random.random())
+
+    # -- init --
+    xform_gpu = RandomFlip_gpu(p=0.9)
+    data_gpu_batch = dcopy(data_gpu)
+    data_gpu_serial = dcopy(data_gpu)
+    
+    # -- run --
+    set_random_seed(seed)
+    data_gpu_batch = xform_gpu(data_gpu_batch)
+    th.cuda.synchronize()
+    set_random_seed(seed)
+    data_gpu_serial = run_serially(xform_gpu,data_gpu_serial)
+    
+    # -- check --
+    data_gpu = dict_to_numpy(data_gpu)
+    data_gpu_batch = dict_to_numpy(data_gpu_batch)
+    data_gpu_serial = dict_to_numpy(data_gpu_serial)
+
+    # -- check --
+    check_pair(data_gpu_batch, data_gpu_serial, ['coord','normal'])
+    # check_pair(data_gpu, data_gpu_serial, ['coord','normal']) # ensure fails
 
 
 def test_RandomJitter(data_cpu, data_gpu):
@@ -588,6 +700,7 @@ def test_RandomJitter(data_cpu, data_gpu):
     # -- check --
     data_gpu = dict_to_numpy(data_gpu)
     check_pair(data_cpu, data_gpu, ['coord'])
+
 
 
 def test_ClipGaussianJitter(data_cpu, data_gpu):
@@ -814,6 +927,35 @@ def test_ChromaticAutoContrast(data_cpu,data_gpu):
     check_pair(data_cpu,data_gpu,['color'])
 
 
+def test_ChromaticAutoContrast_batch(data_gpu):
+
+    # -- imports --
+    from pointcept.engines.hooks.transform_gpu import ChromaticAutoContrast as ChromaticAutoContrast_gpu
+
+    # -- params --
+    seed = int(10000*random.random())
+    p = 1.0 # always
+    blend_factor = np.random.rand(3).reshape((1,3))
+    blend_factor_gpu = th.from_numpy(blend_factor).cuda()
+
+    # -- init --
+    xform_gpu = ChromaticAutoContrast_gpu(p,blend_factor_gpu)
+    data_gpu_batch = dcopy(data_gpu)
+    data_gpu_serial = dcopy(data_gpu)
+    
+    # -- run --
+    set_random_seed(seed)
+    data_gpu_batch = xform_gpu(data_gpu_batch)
+    th.cuda.synchronize()
+    set_random_seed(seed)
+    data_gpu_serial = run_serially(xform_gpu,data_gpu_serial)
+    
+    # -- check --
+    data_gpu_batch = dict_to_numpy(data_gpu_batch)
+    data_gpu_serial = dict_to_numpy(data_gpu_serial)
+    check_pair(data_gpu_batch, data_gpu_serial, ['color','bids'])
+
+
 def test_ChromaticTranslation(data_cpu,data_gpu):
 
     # -- imports --
@@ -838,6 +980,34 @@ def test_ChromaticTranslation(data_cpu,data_gpu):
     # -- check --
     data_gpu = dict_to_numpy(data_gpu)
     check_pair(data_cpu,data_gpu,['color'])
+
+
+def test_ChromaticTranslation_batch(data_gpu):
+
+    # -- imports --
+    from pointcept.engines.hooks.transform_gpu import ChromaticTranslation as ChromaticTranslation_gpu
+
+    # -- params --
+    seed = int(10000*random.random())
+    p = 1.0 # always
+    ratio = 0.5*random.random()
+
+    # -- init --
+    xform_gpu = ChromaticTranslation_gpu(p,ratio)
+    data_gpu_batch = dcopy(data_gpu)
+    data_gpu_serial = dcopy(data_gpu)
+    
+    # -- run --
+    set_random_seed(seed)
+    data_gpu_batch = xform_gpu(data_gpu_batch)
+    th.cuda.synchronize()
+    set_random_seed(seed)
+    data_gpu_serial = run_serially(xform_gpu,data_gpu_serial)
+    
+    # -- check --
+    data_gpu_batch = dict_to_numpy(data_gpu_batch)
+    data_gpu_serial = dict_to_numpy(data_gpu_serial)
+    check_pair(data_gpu_batch, data_gpu_serial, ['color','bids'])
 
 
 def test_ChromaticJitter(data_cpu, data_gpu):
@@ -944,51 +1114,70 @@ def test_RandomColorGrayScale(data_cpu, data_gpu):
 # ---------------- Spatial / Sampling ----------------
 
 def test_ElasticDistortion(data_cpu, data_gpu):
+
+    # -- imports --
     from pointcept.datasets.transform import ElasticDistortion as ElasticDistortion_cpu
     from pointcept.engines.hooks.transform_gpu import ElasticDistortion as ElasticDistortion_gpu
 
+    # -- init --
     seed = int(10000*random.random())
     xform_cpu = ElasticDistortion_cpu()
     xform_gpu = ElasticDistortion_gpu()
 
-    rand_cpu = np.random.rand(1, 3)
-    rand_gpu = th.from_numpy(rand_cpu).cuda()
-
+    # -- run --
     set_random_seed(seed)
-    data_cpu = xform_cpu(data_cpu, _test_rand=rand_cpu)
+    data_cpu = xform_cpu(data_cpu)
     set_random_seed(seed)
-    data_gpu = xform_gpu(data_gpu, _test_rand=rand_gpu)
+    data_gpu = xform_gpu(data_gpu)
 
+    # -- compare --
     data_gpu = dict_to_numpy(data_gpu)
     check_pair(data_cpu, data_gpu, ['coord'])
 
 
 def test_GridSample(data_cpu, data_gpu):
+
+    # -- imports --
     from pointcept.datasets.transform import GridSample as GridSample_cpu
     from pointcept.engines.hooks.transform_gpu import GridSample as GridSample_gpu
 
+    # -- init --
     seed = int(10000*random.random())
-    xform_cpu = GridSample_cpu()
-    xform_gpu = GridSample_gpu()
+    mode = "test"
+    grid_size=0.05
+    xform_cpu = GridSample_cpu(return_grid_coord=True,mode=mode,grid_size=grid_size)
+    xform_gpu = GridSample_gpu(return_grid_coord=True,mode=mode,grid_size=grid_size)
 
-    rand_cpu = np.random.rand(1, 3)
-    rand_gpu = th.from_numpy(rand_cpu).cuda()
-
+    # -- run --
     set_random_seed(seed)
-    data_cpu = xform_cpu(data_cpu, _test_rand=rand_cpu)
+    data_cpu_l = xform_cpu(data_cpu)
     set_random_seed(seed)
-    data_gpu = xform_gpu(data_gpu, _test_rand=rand_gpu)
+    data_gpu_l = xform_gpu(data_gpu)
 
-    data_gpu = dict_to_numpy(data_gpu)
-    check_pair(data_cpu, data_gpu, ['coord'])
+    # -- ensure list --
+    if mode == "train": # not a list, like in the testing case
+        data_cpu_l = [data_cpu_l]
+        data_gpu_l = [data_gpu_l]
+    
 
+    for (data_cpu,data_gpu) in zip(data_cpu_l,data_gpu_l):
 
+        # -- check --
+        data_gpu = dict_to_numpy(data_gpu)
+        sort_by_coordinate(data_cpu)
+        sort_by_coordinate(data_gpu)
+
+        # print(data_cpu['grid_coord'])
+        # print(data_gpu['grid_coord'])
+
+        check_pair(data_cpu, data_gpu, ['bids'])
+        check_pair(data_cpu, data_gpu, ['grid_coord'])
 
 
 def main():
 
 
-    batch_size = 3
+    batch_size = 1
     train_loader = get_data_loader(batch_size)
 
     nchecks = 100
@@ -1012,8 +1201,8 @@ def main():
         # test_PointClip(data_cpu,data_gpu)
 
         # test_SphereCrop(data_cpu, data_gpu)
-        if batch_size > 1:
-            test_SphereCrop_batch(data_gpu)
+        # if batch_size > 1:
+        #     test_SphereCrop_batch(data_gpu)
 
 
         # test_ShufflePoint(data_cpu, data_gpu)
@@ -1028,16 +1217,33 @@ def main():
         #     test_RandomDropout_batch(data_gpu)
 
         # test_RandomRotate(data_cpu,data_gpu)
+        # if batch_size > 1:
+        #     test_RandomRotate_batch(data_gpu)
+
         # test_RandomRotateTargetAngle(data_cpu,data_gpu)
         # test_RandomScale(data_cpu,data_gpu)
+        # if batch_size > 1:
+        #     test_RandomScale_batch(data_gpu)
+        # test_RandomScale(data_cpu,data_gpu)
         # test_RandomFlip(data_cpu,data_gpu)
+        # if batch_size > 1:
+        #     test_RandomFlip_batch(data_gpu)
         # test_RandomJitter(data_cpu,data_gpu)
         # test_ClipGaussianJitter(data_cpu,data_gpu)
     
         # -- color --
         # test_NormalizeColor(data_cpu,data_gpu)
         # test_ChromaticAutoContrast(data_cpu,data_gpu)
+        # if batch_size > 1:
+        #     test_ChromaticAutoContrast_batch(data_gpu)
         # test_ChromaticTranslation(data_cpu,data_gpu)
+        # if batch_size > 1:
+        #     test_ChromaticTranslation_batch(data_gpu)
+
+
+        # -- more interesting ones --
+        # test_ElasticDistortion(data_cpu, data_gpu)
+        test_GridSample(data_cpu, data_gpu)
 
 
 if __name__ == "__main__":

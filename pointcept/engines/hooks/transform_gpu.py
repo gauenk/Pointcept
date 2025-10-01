@@ -19,7 +19,11 @@ import copy
 from collections.abc import Sequence, Mapping
 from torch_scatter import scatter_mean
 
+
 from pointcept.utils.registry import Registry
+
+# -- for grid sample --
+from spconv.pytorch.hash import HashTable
 
 TRANSFORMS_GPU = Registry("transforms_gpu")
 
@@ -378,12 +382,20 @@ class RandomShift(object):
     def __call__(self, data_dict):
         if "coord" in data_dict:
             coords = data_dict["coord"]
-            shift_x = np.random.uniform(self.shift[0][0], self.shift[0][1])
-            shift_y = np.random.uniform(self.shift[1][0], self.shift[1][1])
-            shift_z = np.random.uniform(self.shift[2][0], self.shift[2][1])
-            shift_vec = torch.tensor([shift_x, shift_y, shift_z],device="cuda")
-            coords = coords + shift_vec
-            data_dict["coord"] = coords
+            offset = data_dict['offset']
+            csum = th.cumsum(offset,dim=0)
+            B = len(offset)
+            for b in range(B):
+                if b > 0: s = csum[b-1]
+                else: s = 0
+                e = csum[b]
+
+                shift_x = np.random.uniform(self.shift[0][0], self.shift[0][1])
+                shift_y = np.random.uniform(self.shift[1][0], self.shift[1][1])
+                shift_z = np.random.uniform(self.shift[2][0], self.shift[2][1])
+
+                shift_vec = torch.tensor([shift_x, shift_y, shift_z],device="cuda").reshape(1,3)
+                data_dict["coord"][s:e] = data_dict["coord"][s:e] + shift_vec
         return data_dict
 
 
@@ -486,6 +498,108 @@ class RandomRotate(object):
         self.center = center
 
     def __call__(self, data_dict):
+        return self.version_v1(data_dict)
+        # return self.version_v0(data_dict)
+
+    def version_v1(self,data_dict): # for benchmarking 
+
+        if random.random() > self.p:
+            return data_dict
+
+        # -- sample angle --
+        dev = data_dict['offset'].device
+        bids = data_dict['bids']
+        offset = data_dict['offset']
+        B = len(data_dict['offset'])
+        angle_min, angle_max = self.angle[0], self.angle[1]
+        angles = (torch.rand(B, device=dev) * (angle_max - angle_min) + angle_min) * torch.pi
+        rot_cos = torch.cos(angles)
+        rot_sin = torch.sin(angles)
+
+        # -- create rotation matrices --
+        if self.axis == "x":
+            rot_t = torch.zeros((B, 3, 3), device=dev, dtype=torch.float32)
+            rot_t[:, 0, 0] = 1
+            rot_t[:, 1, 1] = rot_cos
+            rot_t[:, 1, 2] = -rot_sin
+            rot_t[:, 2, 1] = rot_sin
+            rot_t[:, 2, 2] = rot_cos
+        elif self.axis == "y":
+            rot_t = torch.zeros((B, 3, 3), device=dev, dtype=torch.float32)
+            rot_t[:, 1, 1] = 1
+            rot_t[:, 0, 0] = rot_cos
+            rot_t[:, 0, 2] = rot_sin
+            rot_t[:, 2, 0] = -rot_sin
+            rot_t[:, 2, 2] = rot_cos
+        elif self.axis == "z":
+            rot_t = torch.zeros((B, 3, 3), device=dev, dtype=torch.float32)
+            rot_t[:, 2, 2] = 1
+            rot_t[:, 0, 0] = rot_cos
+            rot_t[:, 0, 1] = -rot_sin
+            rot_t[:, 1, 0] = rot_sin
+            rot_t[:, 1, 1] = rot_cos
+        else:
+            raise NotImplementedError
+
+        if "coord" in data_dict:
+
+            # -- prepare the center --
+            coord = data_dict["coord"]
+            if self.center is None:
+
+                if B > 1:
+
+                    # initialize with +inf / -inf
+                    coord_min = torch.full((B, 3), float('inf'), device=dev)
+                    coord_max = torch.full((B, 3), float('-inf'), device=dev)
+
+                    # index-reduce
+                    coord_min = torch.index_reduce(coord_min,0,bids,coord,reduce="amin",include_self=False)
+                    coord_max = torch.index_reduce(coord_max,0,bids,coord,reduce="amax",include_self=False)
+                    
+                    center = (coord_min+coord_max)/2.
+                    center = center.repeat_interleave(offset,dim=0)
+
+                else:
+
+                    mins = data_dict["coord"].min(dim=0).values
+                    maxs = data_dict["coord"].max(dim=0).values
+                    center = (mins+maxs)/2.
+                    center = center.reshape(1,3)
+
+            else:
+                center = torch.tensor(self.center, device=dev, dtype=torch.float32)
+                center = center.reshape(1,3)
+
+            # -- run the rotation --
+            # print(coord.shape,center.shape)
+            coord = coord - center
+            # print(coord.shape)
+            # print(rot_t[bids].shape,rot_t[bids].transpose(2,1).shape)
+            if B > 1:
+                coord = (coord[:,None] @ rot_t[bids].transpose(2,1)).squeeze(1)
+            else:
+                coord = torch.matmul(coord, rot_t[0].T)
+            coord = coord + center
+
+            data_dict["coord"] = coord
+
+        # -- rotate normals --
+        if "normal" in data_dict:
+            normals = data_dict["normal"]
+
+
+            if B > 1:
+                normals = (normals[:,None] @ rot_t[bids].transpose(2,1)).squeeze(1)
+            else:
+                normals = torch.matmul(normals, rot_t[0].T)
+
+            data_dict["normal"] = normals
+
+        return data_dict
+
+
+    def version_v0(self,data_dict): # for benchmarking 
         if random.random() > self.p:
             return data_dict
 
@@ -643,20 +757,27 @@ class RandomScale(object):
         self.anisotropic = anisotropic
 
     def __call__(self, data_dict):
-        if "coord" in data_dict:
-            # if self.anisotropic:
+        if not("coord" in data_dict): return data_dict
 
-            #     scale = torch.empty(3, device="cuda").uniform_(self.scale[0], self.scale[1])
-            # else:
-            #     scale = torch.empty(1, device="cuda").uniform_(self.scale[0], self.scale[1])
+        offset = data_dict['offset']
+        csum = th.cumsum(offset,dim=0)
+        B = len(offset)
 
-            coords = data_dict["coord"]
+        for b in range(B):
+
+            # -- batch inds --
+            if b > 0: start = csum[b-1]
+            else: start = 0
+            stop = start + offset[b]
+            ix = slice(start,stop)
+
+            # -- scale --
             scale = np.random.uniform(
                 self.scale[0], self.scale[1], 3 if self.anisotropic else 1
             )
             scale = th.from_numpy(scale).to("cuda")
-            coords = coords * scale
-            data_dict["coord"] = coords
+            data_dict["coord"][ix] = data_dict["coord"][ix] * scale
+
         return data_dict
 
 # @TRANSFORMS_GPU.register_module()
@@ -680,23 +801,46 @@ class RandomFlip(object):
         self.p = p
 
     def __call__(self, data_dict):
-        coords = data_dict.get("coord")
-        normals = data_dict.get("normal")
+        # coords = data_dict.get("coord")
+        # normals = data_dict.get("normal")
 
-        if coords is not None:
-            coords = coords
+        # -- batch info --
+        offset = data_dict['offset']
+        csum = th.cumsum(offset,dim=0)
+        B = len(offset)
+        for b in range(B):
+            
+            # -- batch inds --
+            if b > 0: start = csum[b-1]
+            else: start = 0
+            stop = start + offset[b]
+            ix = slice(start,stop)
+
+            # -- xforms --
             if np.random.rand() < self.p:
-                coords[:, 0] = -coords[:, 0]
-                if normals is not None:
-                    normals = normals
-                    normals[:, 0] = -normals[:, 0]
+                if "coord" in data_dict.keys():
+                    data_dict["coord"][ix, 0] = -data_dict["coord"][ix, 0]
+                if "normal" in data_dict.keys():
+                    data_dict["normal"][ix, 0] = -data_dict["normal"][ix, 0]
             if np.random.rand() < self.p:
-                coords[:, 1] = -coords[:, 1]
-                if normals is not None:
-                    normals[:, 1] = -normals[:, 1]
-            data_dict["coord"] = coords
-            if normals is not None:
-                data_dict["normal"] = normals
+                if "coord" in data_dict.keys():
+                    data_dict["coord"][ix, 1] = -data_dict["coord"][ix, 1]
+                if "normal" in data_dict.keys():
+                    data_dict["normal"][ix, 1] = -data_dict["normal"][ix, 1]
+    
+            # if np.random.rand() < self.p:
+            #     print("x.")
+            #     data_dict['coords'][ix, 0] = -data_dict['coords'][ix, 0]
+            #     if normals is not None:
+            #         normals[ix, 0] = -normals[ix, 0]
+            # if np.random.rand() < self.p:
+            #     print("y.")
+            #     coords[ix, 1] = -coords[ix, 1]
+            #     if normals is not None:
+            #         normals[ix, 1] = -normals[ix, 1]
+            # data_dict["coord"] = coords
+            # if normals is not None:
+            #     data_dict["normal"] = normals
         return data_dict
 
 # class RandomFlip(object):
@@ -807,8 +951,27 @@ class ChromaticAutoContrast(object):
         self.blend_factor = blend_factor
 
     def __call__(self, data_dict):
-        if "color" in data_dict.keys() and random.random() < self.p:
-            color = data_dict["color"]
+        if not("color" in data_dict.keys() and random.random() < self.p):
+            return data_dict
+
+        coords = data_dict["coord"]
+        offset = data_dict['offset']
+        csum = th.cumsum(offset,dim=0)
+        B = len(offset)
+        for b in range(B):
+
+            # -- batch info --
+            if b > 0: start = csum[b-1]
+            else: start = 0
+            stop = start + offset[b]
+            ix = slice(start,stop)
+
+
+            #
+            # -- apply transform --
+            #
+
+            color = data_dict["color"][ix]
             lo = torch.min(color, dim=0, keepdim=True)[0]
             hi = torch.max(color, dim=0, keepdim=True)[0]
 
@@ -820,7 +983,7 @@ class ChromaticAutoContrast(object):
             blend_factor = random.random() if self.blend_factor is None else self.blend_factor
             color[:, :3] = (1 - blend_factor) * color[:, :3] + blend_factor * contrast_feat
 
-            data_dict["color"] = color
+            data_dict["color"][ix] = color
 
         return data_dict
     # def __init__(self, p=0.2, blend_factor=None):
@@ -860,17 +1023,35 @@ class ChromaticTranslation(object):
         self.ratio = ratio
 
     def __call__(self, data_dict,_test_rand=None):
-        if "color" in data_dict and random.random() < self.p:
-            color = data_dict["color"]
+        if not("color" in data_dict.keys() and random.random() < self.p):
+            return data_dict
+
+        # -- setup for batching --
+        coords = data_dict["coord"]
+        offset = data_dict['offset']
+        csum = th.cumsum(offset,dim=0)
+        B = len(offset)
+        for b in range(B):
+
+            # -- batch info --
+            if b > 0: start = csum[b-1]
+            else: start = 0
+            stop = start + offset[b]
+            ix = slice(start,stop)
+
+            #
+            # -- apply transformation --
+            #
 
             # -- test rand --
+            color = data_dict["color"][ix]
             if _test_rand is None: rand = torch.rand(1, 3, device="cuda")
             else: rand = _test_rand
 
             # -- xform --
             tr = (rand - 0.5) * 255 * 2 * self.ratio
             color[:, :3] = torch.clamp(color[:, :3] + tr, 0, 255)
-            data_dict["color"] = color
+            data_dict["color"][ix] = color
 
         return data_dict
     # def __init__(self, p=0.95, ratio=0.05):
@@ -891,12 +1072,17 @@ class ChromaticJitter(object):
         self.std = std
 
     def __call__(self, data_dict):
-        if "color" in data_dict and random.random() < self.p:
-            color = data_dict["color"]
-            noise = torch.randn(color.shape[0], 3, device="cuda") * self.std * 255
-            color[:, :3] = torch.clamp(color[:, :3] + noise, 0, 255)
-            data_dict["color"] = color
+        if not("color" in data_dict.keys() and random.random() < self.p):
+            return data_dict
+
+        # -- apply transform --
+        color = data_dict["color"]
+        noise = torch.randn(color.shape[0], 3, device="cuda") * self.std * 255
+        color[:, :3] = torch.clamp(color[:, :3] + noise, 0, 255)
+        data_dict["color"] = color
+
         return data_dict
+
     # def __init__(self, p=0.95, std=0.005):
     #     self.p = p
     #     self.std = std
@@ -1616,7 +1802,11 @@ class ElasticDistortion(object):
 
         # Create Gaussian noise tensor of the size given by granularity
         noise_dim = ((coords - coords_min).max(0)[0] // granularity).long() + 3
-        noise = torch.randn(*noise_dim.tolist(), 3, device=device, dtype=torch.float32)
+        # print(noise_dim)
+        # exit()
+        # noise = torch.randn(*noise_dim.tolist(), 3, device=device, dtype=torch.float32)
+        noise = np.random.randn(*noise_dim, 3).astype(np.float32)
+        noise = th.from_numpy(noise).to(device)
 
         # Smoothing with 3D convolution
         # Reshape for conv3d: (batch, channels, depth, height, width)
@@ -1634,45 +1824,99 @@ class ElasticDistortion(object):
 
                 noise[..., dim_idx] = channel.squeeze(0).squeeze(0)
 
-        # Trilinear interpolation
-        # Create grid coordinates
-        coords_normalized = (coords - coords_min) / granularity
+        
+        
+        #
+        # --> This passes! [moving on with life...] <--
+        #
 
-        # grid_sample expects normalized coordinates in [-1, 1]
-        grid_shape = noise.shape[:-1]
-        for i in range(3):
-            coords_normalized[:, i] = 2 * (coords_normalized[:, i] / (grid_shape[i] - 1)) - 1
+        coords = coords.cpu().numpy()
+        noise = noise.cpu().numpy()
+        noise_dim = noise_dim.cpu().numpy()
+        coords_min = coords_min.cpu().numpy()
 
-        # Reshape noise for grid_sample: (batch, channels, depth, height, width)
-        noise_grid = noise.permute(3, 0, 1, 2).unsqueeze(0)
-
-        # Reshape coords for grid_sample: (batch, out_depth, out_height, out_width, 3)
-        # We want to sample at each point, so create appropriate shape
-        sample_coords = coords_normalized.unsqueeze(0).unsqueeze(0).unsqueeze(0)
-        # grid_sample expects (x, y, z) order, which corresponds to (width, height, depth)
-        sample_coords = sample_coords[..., [2, 1, 0]]
-
-        # Interpolate
-        interpolated = thF.grid_sample(
-            noise_grid, 
-            sample_coords, 
-            mode='bilinear', 
-            padding_mode='zeros',
-            align_corners=True
+        ax = [
+            np.linspace(d_min, d_max, d)
+            for d_min, d_max, d in zip(
+                coords_min - granularity,
+                coords_min + granularity * (noise_dim - 2),
+                noise_dim,
+            )
+        ]
+        interp = scipy.interpolate.RegularGridInterpolator(
+            ax, noise, bounds_error=False, fill_value=0
         )
-
-        # Reshape back to (num_points, 3)
-        distortion = interpolated.squeeze(0).squeeze(1).squeeze(1).permute(1, 0)
-
-        coords = coords + distortion * magnitude
+        coords += interp(coords) * magnitude
+        coords = th.from_numpy(coords).to(device)
         return coords
 
+
+        #
+        # -- > This does not pass --
+        #
+
+
+        # # -- get different grid --
+        # ax = [
+        #     th.from_numpy(np.linspace(d_min.cpu().numpy(), d_max.cpu().numpy(), d.cpu().numpy())).to(device)
+        #     for d_min, d_max, d in zip(
+        #         coords_min - granularity,
+        #         coords_min + granularity * (noise_dim - 2),
+        #         noise_dim,
+        #     )]
+        # print([(ax[i].min(),ax[i].max()) for i in range(3)])
+        # coords_normalized = th.cat(ax,dim=-1)
+        # print(coords_normalized.shape)
+
+        # # -- normalize grid --
+        # # grid_shape = noise.shape[:-1]
+        # # coords_normalized = (coords - coords_min) / (granularity * (torch.tensor(grid_shape, device=device) - 2))
+        # # coords_normalized = 2 * coords_normalized - 1
+        # print(coords_normalized.min(),coords_normalized.max())
+        # print(coords_normalized)
+        # exit()
+
+        # # -- prepare for grid sample --
+        # sample_coords = coords_normalized.view(1, 1, 1, -1, 3)
+        # sample_coords = sample_coords[..., [2, 1, 0]]
+        # noise_grid = noise.permute(3, 0, 1, 2).unsqueeze(0)
+
+        # # -- grid sample! --
+        # interpolated = thF.grid_sample(
+        #     noise_grid, 
+        #     sample_coords, 
+        #     mode='bilinear', 
+        #     padding_mode='zeros',
+        #     align_corners=True
+        # )
+
+        # # Reshape back to (num_points, 3)
+        # distortion = interpolated.squeeze(0).squeeze(1).squeeze(1).permute(1, 0)
+        # coords = coords + distortion * magnitude
+
+        # return coords
+
     def __call__(self, data_dict):
-        if "coord" in data_dict.keys() and self.distortion_params is not None:
-            if torch.rand(1).item() < 0.95:
+        if not("coord" in data_dict.keys() and self.distortion_params is not None):
+            return data_dict
+
+        # -- batch info --
+        offset = data_dict['offset']
+        csum = th.cumsum(offset,dim=0)
+        B = len(offset)
+        for b in range(B):
+            
+            # -- batch inds --
+            if b > 0: start = csum[b-1]
+            else: start = 0
+            stop = start + offset[b]
+            ix = slice(start,stop)
+
+            # -- apply xform --
+            if random.random() < 0.95:
                 for granularity, magnitude in self.distortion_params:
-                    data_dict["coord"] = self.elastic_distortion(
-                        data_dict["coord"], granularity, magnitude
+                    data_dict["coord"][ix] = self.elastic_distortion(
+                        data_dict["coord"][ix], granularity, magnitude
                     )
         return data_dict
 # class ElasticDistortion(object):
@@ -1761,22 +2005,47 @@ class GridSample(object):
     def __call__(self, data_dict):
         assert "coord" in data_dict.keys()
 
-        # -- get coordinates --
-        scaled_coord = data_dict["coord"] / self.grid_size
-        grid_coord = th.floor(scaled_coord).to(th.int32)
-        min_coord = grid_coord.min(0).values[None,:]
+
+        # -- numpy temp --
+        device = data_dict["coord"].device
+        scaled_coord = data_dict["coord"].cpu().numpy() / np.array(self.grid_size)
+        grid_coord = np.floor(scaled_coord).astype(int)
+        min_coord = grid_coord.min(0)
         grid_coord -= min_coord
         scaled_coord -= min_coord
-        min_coord = min_coord * self.grid_size
+        min_coord = min_coord * np.array(self.grid_size)
+
+        
+        scaled_coord = th.from_numpy(scaled_coord).to(device)
+        grid_coord = th.from_numpy(grid_coord).to(device)
+        min_coord = th.from_numpy(min_coord).to(device)
+        # print(grid_coord.max(0))
+
+
+        # # -- get coordinates --
+        # device = data_dict["coord"].device
+        # _coord = data_dict["coord"].cpu().numpy()
+        # scaled_coord = _coord / self.grid_size
+        # scaled_coord = th.from_numpy(scaled_coord).to(device)
+        # # scaled_coord = data_dict["coord"] / self.grid_size
+        # grid_coord = th.floor(scaled_coord).to(th.int32)
+
+        # # scaled_coord = data_dict["coord"] / self.grid_size
+        # # grid_coord = th.floor(scaled_coord).to(th.int32)
+
+        # min_coord = grid_coord.min(0).values[None,:]
+        # grid_coord -= min_coord
+        # scaled_coord -= min_coord
+        # min_coord = min_coord * self.grid_size
 
         # -- cat with batch indices --
         bids = data_dict['bids'][:,None]
+        grid_coord = th.cat([bids,grid_coord],dim=-1)
         # print(grid_coord.shape)
         # print(bids.shape)
-        grid_coord = th.cat([bids,grid_coord],dim=-1)
+        # print("[gpu] max: ",grid_coord.max(0).values)
 
         # -- get hash --
-        from spconv.pytorch.hash import HashTable
         dev = grid_coord.device
         N = grid_coord.shape[0]
         key = self.hash(grid_coord)
@@ -1784,11 +2053,7 @@ class GridSample(object):
         table.insert(key, torch.arange(N, device=dev, dtype=torch.int64))
         table.assign_arange_()
         inverse,_ = table.query(key)
-        # print(inverse.shape,inverse.min(),inverse.max())
         grid_coord = grid_coord[:,1:]
-
-        # print(idx.shape,idx.min(),idx.max())
-        # print(idx)
 
         # -- goal --
         # idx_sort = np.argsort(key)
@@ -1807,19 +2072,13 @@ class GridSample(object):
             #     + np.random.randint(0, count.max(), count.size) % count
             # )
 
-            # -- get inds --
-            NumUniq = inverse.max().item()+1
-            idx_select = NumUniq*th.ones(NumUniq,device=dev,dtype=inverse.dtype)
-            idx_select = idx_select.scatter_reduce(0, inverse, N*th.ones(N, device=inverse.device),
-                                            reduce="amin", include_self=True)
-            idx_unique = inverse[idx_select]
 
-            # -- check --
-            # len0 = len(th.unique(grid_coord[idx_unique],dim=0))
-            # len1 = len(th.unique(key[idx_unique]))
-            # len2 = len(th.unique(grid_coord[idx_unique],dim=0))
-            # print(len0,len1,len2)
-            # exit()
+            # -- get inds --
+            # N = key.shape[0]
+            NumUniq = inverse.max().item()+1
+            idx_unique = (N+1)*th.ones(NumUniq,device=dev,dtype=th.int)
+            vals = th.arange(N, device=inverse.device,dtype=idx_unique.dtype)
+            idx_unique = idx_unique.scatter_reduce(0, inverse, vals, reduce="amin", include_self=True).int()
 
             if "sampled_index" in data_dict: # not implemented
                 assert(False) # not implemented yet
@@ -1840,13 +2099,17 @@ class GridSample(object):
                     data_dict["index_valid_keys"].append("grid_coord")
             if self.return_min_coord:
                 data_dict["min_coord"] = min_coord.reshape([1, 3])
-            if self.return_displacement:
+            if self.return_displacement: # not really tested; check before use
+                assert(False)
                 displacement = (
                     scaled_coord - grid_coord - 0.5
                 )  # [0, 1] -> [-0.5, 0.5] displacement to center
                 if self.project_displacement:
-                    displacement = np.sum(
-                        displacement * data_dict["normal"], axis=-1, keepdims=True
+                    # displacement = np.sum(
+                    #     displacement * data_dict["normal"], axis=-1, keepdims=True
+                    # )
+                    displacement = th.sum(
+                        displacement * data_dict["normal"], dim=-1, keepdims=True
                     )
                 data_dict["displacement"] = displacement[idx_unique]
                 if "displacement" not in data_dict["index_valid_keys"]:
@@ -1856,37 +2119,55 @@ class GridSample(object):
         elif self.mode == "test":  # test mode
 
             # -- get counts --
-            idx_sort = th.argsort(key)
-            key_sort = key[idx_sort]
-            count = th.bincount(inds)
-            idx_base = th.cumsum(count)
+            idx_sort = th.argsort(inverse)
+            # key_sort = key[idx_sort]
+            count = th.bincount(inverse)
+            start_idx = torch.cumsum(torch.cat([torch.tensor([0], device=count.device), count[:-1]]), dim=0)
+            # idx_sort = idx_sort.cpu().numpy()
+            # inverse = inverse.cpu().numpy()
+            # print(count.max())
+
+            # idx_base = th.cumsum(count)
+            # assert(False)
 
             data_part_list = []
             for i in range(count.max()):
-                idx_select = np.cumsum(np.insert(count, 0, 0)[0:-1]) + i % count
+                # idx_select = np.cumsum(np.insert(count, 0, 0)[0:-1]) + i % count
+                idx_select = start_idx + i % count
                 idx_part = idx_sort[idx_select]
                 data_part = index_operator(data_dict, idx_part, duplicate=True)
+                # print(data_part['bids'].shape,data_part['coord'].shape)
+                # exit()
+                # data_part["index"] = th.from_numpy(idx_part).to(device)
                 data_part["index"] = idx_part
                 if self.return_inverse:
-                    data_part["inverse"] = np.zeros_like(inverse)
+                    data_part["inverse"] = th.zeros_like(inverse)
                     data_part["inverse"][idx_sort] = inverse
+                    # data_part["inverse"] = np.zeros_like(inverse)
+                    # data_part["inverse"][idx_sort] = inverse
                 if self.return_grid_coord:
+                    # print("hi.")
                     data_part["grid_coord"] = grid_coord[idx_part]
                     if "grid_coord" not in data_part["index_valid_keys"]:
                         data_part["index_valid_keys"].append("grid_coord")
                 if self.return_min_coord:
                     data_part["min_coord"] = min_coord.reshape([1, 3])
-                if self.return_displacement:
+                if self.return_displacement: # not really tested
+                    assert(False)
                     displacement = (
                         scaled_coord - grid_coord - 0.5
                     )  # [0, 1] -> [-0.5, 0.5] displacement to center
                     if self.project_displacement:
-                        displacement = np.sum(
-                            displacement * data_dict["normal"], axis=-1, keepdims=True
+                        displacement = th.sum(
+                            displacement * data_dict["normal"], dim=-1, keepdim=True
                         )
+                        # displacement = np.sum(
+                        #     displacement * data_dict["normal"], axis=-1, keepdims=True
+                        # )
                     data_part["displacement"] = displacement[idx_part]
                     if "displacement" not in data_part["index_valid_keys"]:
                         data_part["index_valid_keys"].append("displacement")
+                # print("gpu: ",i,data_part['coord'].shape)
                 data_part_list.append(data_part)
             return data_part_list
         else:

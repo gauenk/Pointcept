@@ -792,6 +792,7 @@ class ElasticDistortion(object):
         noise_dim = ((coords - coords_min).max(0) // granularity).astype(int) + 3
         noise = np.random.randn(*noise_dim, 3).astype(np.float32)
 
+
         # Smoothing.
         for _ in range(2):
             noise = scipy.ndimage.filters.convolve(
@@ -860,16 +861,24 @@ class GridSample(object):
         grid_coord -= min_coord
         scaled_coord -= min_coord
         min_coord = min_coord * np.array(self.grid_size)
+        # print("max: ",grid_coord.max(0))
+
+        # key = grid_coord[:,0] * 200*200 + grid_coord[:,1] * 200 + grid_coord[:,2]
         key = self.hash(grid_coord)
         idx_sort = np.argsort(key)
         key_sort = key[idx_sort]
         _, inverse, count = np.unique(key_sort, return_inverse=True, return_counts=True)
+        # print("[cpu] N: ",len(count))
         if self.mode == "train":  # train mode
             idx_select = (
                 np.cumsum(np.insert(count, 0, 0)[0:-1])
                 + np.random.randint(0, count.max(), count.size) % count
             )
+            # print("idx.")
+            # print(idx_select)
             idx_unique = idx_sort[idx_select]
+            # print(idx_unique)
+
             if "sampled_index" in data_dict:
                 # for ScanNet data efficient, we need to make sure labeled point is sampled.
                 idx_unique = np.unique(
@@ -928,6 +937,7 @@ class GridSample(object):
                     data_part["displacement"] = displacement[idx_part]
                     if "displacement" not in data_part["index_valid_keys"]:
                         data_part["index_valid_keys"].append("displacement")
+                # print("cpu: ",i,data_part['coord'].shape)
                 data_part_list.append(data_part)
             return data_part_list
         else:
@@ -968,6 +978,31 @@ class GridSample(object):
             hashed_arr *= np.uint64(1099511628211)
             hashed_arr = np.bitwise_xor(hashed_arr, arr[:, j])
         return hashed_arr
+
+    # @staticmethod
+    # def fnv_hash_vec(arr: np.ndarray) -> np.ndarray:
+    #     """
+    #     60-bit FNV-style hash for a 2D numpy array (N, D).
+    #     Emulates FNV-1a using int64 with 60-bit wraparound.
+    #     """
+    #     assert arr.ndim == 2, "Input must be 2D"
+    #     if arr.dtype != np.int64:
+    #         arr = arr.astype(np.int64)
+        
+    #     # Constants
+    #     FNV_offset_basis = 0xCBF29CE484222325 >> 4  # top 60 bits
+    #     FNV_prime = 1099511628211
+    #     mask60 = (1 << 60) - 1  # 60-bit mask
+    
+    #     # Initialize hash
+    #     hashed = np.full((arr.shape[0],), FNV_offset_basis, dtype=np.int64)
+    
+    #     # Hash loop
+    #     for j in range(arr.shape[1]):
+    #         hashed = (hashed * FNV_prime) & mask60
+    #         hashed = hashed ^ arr[:, j]
+    
+    #     return hashed
 
 
 @TRANSFORMS.register_module()
