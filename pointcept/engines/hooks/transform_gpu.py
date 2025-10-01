@@ -2739,6 +2739,7 @@ class MixUp(object):
         self.mix_prob = mix_prob
 
     def __call__(self, batch):
+        batch['offset'] = th.cumsum(batch['offset'],dim=0) # new meaning! todo: don't use "offset" in other cases -- to silly
         if random.random() < self.mix_prob:
             if "instance" in batch.keys():
                 offset = batch["offset"]
