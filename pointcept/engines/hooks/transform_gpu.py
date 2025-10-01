@@ -2284,6 +2284,66 @@ class SphereCrop(object):
         self.mode = mode
 
     def __call__(self, data_dict):
+        assert "coord" in data_dict.keys()
+
+        return self.version_0(data_dict)
+        # return self.version_1(data_dict)
+
+    def version_0(self, data_dict):
+
+        # -- batch info --
+        offset = data_dict['offset']
+        csum = th.cumsum(offset,dim=0)
+        B = len(offset)
+        inds = []
+        for b in range(B):
+            
+            # -- batch inds --
+            if b > 0: start = csum[b-1]
+            else: start = 0
+            stop = start + offset[b]
+            ix = slice(start,stop)
+
+            # -- run --
+            inds_b = self._version_0_inds(data_dict['coord'][ix])
+            inds.append(inds_b+start)
+
+        # -- concat --
+        inds = th.cat(inds)
+        data_dict = index_operator(data_dict, inds)
+        data_dict['offset'] = th.bincount(data_dict['bids'])
+
+        return data_dict
+
+    def _version_0_inds(self, coord):
+        point_max = (
+            int(self.sample_rate * coord.shape[0])
+            if self.sample_rate is not None
+            else self.point_max
+        )
+
+        if coord.shape[0] > point_max:
+            if self.mode == "random":
+                center = coord[
+                    np.random.randint(coord.shape[0])
+                ]
+            elif self.mode == "center":
+                center = coord[coord.shape[0] // 2]
+            else:
+                raise NotImplementedError
+            idx_crop = th.argsort(th.sum(th.square(coord - center), 1))[:point_max]
+            # idx_crop = np.argsort(np.sum(np.square(coord - center), 1))[
+            #     :point_max
+            # ]
+            # data_dict = index_operator(data_dict, idx_crop)
+        else:
+            idx_crop = th.arange(coord.shape[0],device=coord.device)
+
+        return idx_crop
+
+
+
+    def version_1(self, data_dict):
         point_max = (
             int(self.sample_rate * data_dict["coord"].shape[0])
             if self.sample_rate is not None
@@ -2673,6 +2733,32 @@ class InstanceParser(object): # still cpu
         data_dict["bbox"] = bbox
         return data_dict
 
+@TRANSFORMS_GPU.register_module()
+class MixUp(object):
+    def __init__(self, mix_prob=0.8):
+        self.mix_prob = mix_prob
+
+    def __call__(self, batch):
+        if random.random() < self.mix_prob:
+            if "instance" in batch.keys():
+                offset = batch["offset"]
+                start = 0
+                num_instance = 0
+                for i in range(len(offset)):
+                    if i % 2 == 0:
+                        num_instance = max(batch["instance"][start : offset[i]])
+                    if i % 2 != 0:
+                        mask = batch["instance"][start : offset[i]] != -1
+                        batch["instance"][start : offset[i]] += num_instance * mask
+                    start = offset[i]
+            if "offset" in batch.keys():
+                batch["offset"] = torch.cat(
+                    [batch["offset"][1:-1:2], batch["offset"][-1].unsqueeze(0)], dim=0
+                )
+        return batch
+    
+
+
 
 class ComposeGpu(object):
     def __init__(self, cfg=None):
@@ -2689,3 +2775,6 @@ class ComposeGpu(object):
         for t in self.transforms:
             data_dict = t(data_dict)
         return data_dict
+
+
+

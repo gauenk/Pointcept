@@ -1201,8 +1201,8 @@ def main():
         # test_PointClip(data_cpu,data_gpu)
 
         # test_SphereCrop(data_cpu, data_gpu)
-        # if batch_size > 1:
-        #     test_SphereCrop_batch(data_gpu)
+        if batch_size > 1:
+            test_SphereCrop_batch(data_gpu)
 
 
         # test_ShufflePoint(data_cpu, data_gpu)
@@ -1243,7 +1243,7 @@ def main():
 
         # -- more interesting ones --
         # test_ElasticDistortion(data_cpu, data_gpu)
-        test_GridSample(data_cpu, data_gpu)
+        # test_GridSample(data_cpu, data_gpu)
 
 
 if __name__ == "__main__":
