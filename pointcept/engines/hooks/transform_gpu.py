@@ -484,6 +484,8 @@ class RandomDropout(object):
 
             # index into all fields
             data_dict = index_operator(data_dict, idx)
+            data_dict['offset'] = th.bincount(data_dict['bids'])
+
 
         return data_dict
 
@@ -872,7 +874,7 @@ class RandomJitter(object):
         if "coord" in data_dict:
 
             if _randn is None:
-                randn = torch.randn(coord.shape, device="cuda")
+                randn = torch.randn(data_dict['coord'].shape, device="cuda")
             else:
                 randn = _randn
 
@@ -2040,7 +2042,8 @@ class GridSample(object):
 
         # -- cat with batch indices --
         bids = data_dict['bids'][:,None]
-        grid_coord = th.cat([bids,grid_coord],dim=-1)
+        key = th.cat([bids,grid_coord],dim=-1)
+
         # print(grid_coord.shape)
         # print(bids.shape)
         # print("[gpu] max: ",grid_coord.max(0).values)
@@ -2048,13 +2051,47 @@ class GridSample(object):
         # -- get hash --
         dev = grid_coord.device
         N = grid_coord.shape[0]
-        key = self.hash(grid_coord)
-        table = HashTable(dev,torch.int64,torch.int64, max_size=2*N)
-        table.insert(key, torch.arange(N, device=dev, dtype=torch.int64))
-        table.assign_arange_()
-        inverse,_ = table.query(key)
-        grid_coord = grid_coord[:,1:]
+        B = len(data_dict['offset'])
+        key = self.raster_hash(key)
+        # print(len(th.unique(key)))
 
+        # -- batching info --
+        offset = data_dict['offset']
+        csum = th.cumsum(offset,dim=0)
+        B = len(offset)
+        idx_unique = []
+        for b in range(B):
+
+            # -- batch inds --
+            if b > 0: start = csum[b-1]
+            else: start = 0
+            stop = start + offset[b]
+            ix = slice(start,stop)
+            N = stop - start
+
+            # -- hash batched elements --
+            table = HashTable(dev,torch.int64,torch.int64, max_size=2*N)
+            table.insert(key[ix], torch.arange(N, device=dev, dtype=torch.int64))
+            table.assign_arange_()
+            inverse,_ = table.query(key[ix])
+            # inverse.append(inverse_b)
+
+            # -- get uniqu inds --
+            NumUniq = inverse.max().item()+1
+            idx_unique_b = (N+1)*th.ones(NumUniq,device=dev,dtype=th.int)
+            vals = th.arange(N, device=inverse.device,dtype=idx_unique_b.dtype)
+            idx_unique_b = idx_unique_b.scatter_reduce(0, inverse, vals, reduce="amin", include_self=True).int()
+            idx_unique.append(idx_unique_b+start)
+
+        idx_unique = th.cat(idx_unique)
+        # print(len(th.unique(key[idx_unique])))
+        # exit()
+
+        # print(idx_unique.shape)
+        # exit()
+        # print(idx_unique.shape)
+        # inverse = th.cat(inverse)
+            
         # -- goal --
         # idx_sort = np.argsort(key)
         # key_sort = key[idx_sort]
@@ -2072,13 +2109,8 @@ class GridSample(object):
             #     + np.random.randint(0, count.max(), count.size) % count
             # )
 
-
             # -- get inds --
             # N = key.shape[0]
-            NumUniq = inverse.max().item()+1
-            idx_unique = (N+1)*th.ones(NumUniq,device=dev,dtype=th.int)
-            vals = th.arange(N, device=inverse.device,dtype=idx_unique.dtype)
-            idx_unique = idx_unique.scatter_reduce(0, inverse, vals, reduce="amin", include_self=True).int()
 
             if "sampled_index" in data_dict: # not implemented
                 assert(False) # not implemented yet
@@ -2090,6 +2122,7 @@ class GridSample(object):
                 mask[data_dict["sampled_index"]] = True
                 data_dict["sampled_index"] = np.where(mask[idx_unique])[0]
             data_dict = index_operator(data_dict, idx_unique)
+            data_dict['offset'] = th.bincount(data_dict['bids'])
             if self.return_inverse:
                 data_dict["inverse"] = th.zeros_like(inverse)
                 data_dict["inverse"][idx_sort] = inverse
@@ -2118,6 +2151,7 @@ class GridSample(object):
 
         elif self.mode == "test":  # test mode
 
+            assert(False) # not tested in batch mode.
             # -- get counts --
             idx_sort = th.argsort(inverse)
             # key_sort = key[idx_sort]
@@ -2136,6 +2170,7 @@ class GridSample(object):
                 idx_select = start_idx + i % count
                 idx_part = idx_sort[idx_select]
                 data_part = index_operator(data_dict, idx_part, duplicate=True)
+                data_part['offset'] = th.bincount(data_part['bids'])
                 # print(data_part['bids'].shape,data_part['coord'].shape)
                 # exit()
                 # data_part["index"] = th.from_numpy(idx_part).to(device)
@@ -2172,6 +2207,18 @@ class GridSample(object):
             return data_part_list
         else:
             raise NotImplementedError
+
+
+    @staticmethod
+    def raster_hash(grid_coords):
+        """
+        Ravel the coordinates after subtracting the min coordinates.
+        """
+        B,X,Y,Z = grid_coords.max(0).values
+        B,X,Y,Z = B+1,X+1,Y+1,Z+1
+        ghash = grid_coords[:,0] * X * Y * Z + grid_coords[:,1] * Y * Z + \
+            + grid_coords[:,2] * Z + grid_coords[:,3]
+        return ghash
 
     @staticmethod
     def ravel_hash_vec(arr):
@@ -2313,6 +2360,7 @@ class SphereCrop(object):
 
 
             data_dict = index_operator(data_dict, idx_crop)
+            data_dict['offset'] = th.bincount(data_dict['bids'])
         return data_dict
 
 
@@ -2356,7 +2404,7 @@ class ShufflePoint(object):
         assert "coord" in data_dict.keys()
 
         # randperm per batch
-        shuffle_index = randperm_by_bids(bids)
+        shuffle_index = randperm_by_bids(data_dict['bids'])
         # bids = data_dict["bids"]
         # N = data_dict["coord"].shape[0]
         # rand = torch.rand(N, device=bids.device, dtype=th.float64)
