@@ -1980,10 +1980,23 @@ class SphereCrop(object):
                 ).item()
                 center = data_dict["coord"][idx]
             elif self.mode == "center":
+
+                # tensor = []
+                # for b in range(B):
+                #     od = th.arange(data_dict['offset'][b],device=data_dict['offset'].device)
+                #     tensor.append(od)
+                # tensor = th.cat(tensor)
+                # print(tensor)
+                
                 csum = th.cumsum(data_dict['offset'],dim=0)
-                midpoint = csum - data_dict['offset']//2 - 1
-                # print(csum,midpoint,data_dict['offset']//2,data_dict["coord"].shape)
+                midpoint = csum - (data_dict['offset']+1)//2
                 center = data_dict["coord"][midpoint]
+
+                # _center = tensor[midpoint]
+                # print(_center,data_dict['offset']//2)
+                # print(
+                # exit()
+
                 if B > 1:
                     center = center.repeat_interleave(data_dict['offset'],dim=0)
                 else:
@@ -2002,15 +2015,19 @@ class SphereCrop(object):
             # print(center,center.shape,data_dict['coord'].shape)
 
             bids = data_dict['bids']
-            distances = torch.sum(torch.square(data_dict["coord"] - center), dim=1)
-            max_dist = distances.max()+1
+            distances = torch.mean(torch.square(data_dict["coord"] - center), dim=1)/10.
+            max_dist = distances.max()+1.0
             distances = bids*max_dist + distances # silly but simple
             idx_crop = torch.argsort(distances)
 
             keep_n = th.tensor([point_max,]*B,device=bids.device)
             indices = slice_by_bids(bids,data_dict['offset'],keep_n)
             idx_crop = idx_crop[indices]
-            # print(distances[idx_crop])
+
+            # print(B,distances[idx_crop][:10])
+            # _bids = bids[idx_crop]
+            # for b in range(B):
+            #     print(b,th.unique(_bids[point_max*b:point_max*(b+1)]))
             # print(idx_crop)
 
 

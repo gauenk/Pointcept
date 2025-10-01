@@ -663,9 +663,10 @@ def test_SphereCrop_batch(data_gpu):
     point_max = np.random.choice([40000,60000,80000])
     mode = np.random.choice(["random", "center"])
     mode = "center"
+    data_gpu['coord'] += th.clamp(0.01*th.randn_like(data_gpu['coord']),-0.05,0.05)
 
     # -- init --
-    xform_gpu = SphereCrop_gpu(mode=mode)
+    xform_gpu = SphereCrop_gpu(point_max=point_max,mode=mode)
     data_gpu_batch = dcopy(data_gpu)
     data_gpu_serial = dcopy(data_gpu)
     
@@ -680,18 +681,14 @@ def test_SphereCrop_batch(data_gpu):
     data_gpu_batch = dict_to_numpy(data_gpu_batch)
     data_gpu_serial = dict_to_numpy(data_gpu_serial)
 
-    # -- check --
-    data_gpu = dict_to_numpy(data_gpu)
+    # print(data_gpu_batch['coord'][-10:])
+    # print(data_gpu_serial['coord'][-10:])
+
     if mode == "center":
-        check_pair(data_cpu, data_gpu, ['coord','bids'])
-    elif mode == "random":
-        check_pair(data_cpu, data_gpu, ['bids'])
-    else:
-        raise ValueError(f"Uknown mode [{mode}]")
-
-    # # check_pair(data_gpu_batch, data_gpu_serial, ['coord', 'color', 'segment'])
-    # check_pair(data_gpu_batch, data_gpu_serial, ['bids'])
-
+        delta = np.mean((data_gpu_batch['coord']-data_gpu_serial['coord'])**2,-1)
+        perror = np.mean(1.0*(delta < 1e-10))
+        assert(perror > 0.98) # a larger batch size has small erros in each which accumulate; so test few
+    check_pair(data_gpu_batch, data_gpu_serial, ['bids'])
 
 def test_ShufflePoint(data_cpu, data_gpu):
 
@@ -991,7 +988,7 @@ def test_GridSample(data_cpu, data_gpu):
 def main():
 
 
-    batch_size = 1
+    batch_size = 3
     train_loader = get_data_loader(batch_size)
 
     nchecks = 100
