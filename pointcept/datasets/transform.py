@@ -33,6 +33,7 @@ def index_operator(data_dict, index, duplicate=False):
             "strength",
             "segment",
             "instance",
+            "oversegment",
             "bids" # for testing only
         ]
     if not duplicate:
@@ -136,6 +137,97 @@ class ToTensor(object):
             return result
         else:
             raise TypeError(f"type {type(data)} cannot be converted to tensor.")
+
+
+@TRANSFORMS.register_module()
+class PaintByNumbersPooling(object):
+    def __init__(self, active=False):
+        self.active = active
+
+    @staticmethod
+    def pooling(labels, color):
+        """
+        Compute mean color per label.
+        
+        Args:
+            labels: (N,) array of integer labels in {0, ..., S-1}
+            color:  (N, F) array of features (e.g., RGB colors)
+        Returns:
+            means: (S, F) array where means[s] = average color of label s
+        """
+        labels = np.asarray(labels)
+        color = np.asarray(color, dtype=float)
+        # print(labels.min(),labels.max())
+    
+        S = labels.max() + 1
+        N, F = color.shape
+    
+        # --- sum per label ---
+        sums = np.zeros((S, F), dtype=color.dtype)
+        np.add.at(sums, labels, color)
+    
+        # --- count per label ---
+        counts = np.zeros(S, dtype=color.dtype)
+        np.add.at(counts, labels, 1)
+    
+        # --- avoid divide by zero ---
+        counts = np.maximum(counts, 1)[:, None]
+    
+        # --- mean ---
+        means = sums / counts
+        return means
+        
+    def __call__(self, data_dict):
+        if not(self.active): return data_dict
+        if not("oversegment" in data_dict.keys()): return data_dict
+        labels = data_dict['oversegment']
+        color = data_dict['color']
+        mcolor = self.pooling(labels,color)
+        color = mcolor[labels]
+        data_dict['color'] = color
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+class PaintByNumbersSampling(object):
+
+    """
+
+        We want the color-augmentation-code to not need modification.
+
+        1. So we start by copying the paint-by-color value to each color
+           [PaintByNumbersPooling]
+
+        2. The augmentations run as usual
+
+        3. Then, once all is applied, we just have to pick one point from
+        each cluster as the "augmented" color for that particular cluster.
+           [PaintByNumbersSampling]
+
+
+        PbN_Network(data(upsample=False)) == Normal_Network(data(upsample=True))
+
+    """
+    def __init__(self, active=False, upsample=False):
+        self.active = active
+        self.upsample = upsample # for testing;
+
+    def __call__(self, data_dict):
+        if not(self.active): return data_dict
+        if not("oversegment" in data_dict.keys()): return data_dict
+        labels = data_dict['oversegment']
+        color = data_dict['color']
+
+        # -- get min index [doesn't actually matter] --
+        S = labels.max() + 1
+        index = np.full(S, -1, dtype=int)
+        index[labels[::-1]] = np.arange(len(labels)-1, -1, -1)
+        color = color[index] # sample color
+
+        if self.upsample: color = color[labels]
+        data_dict['color'] = color # update assignment
+
+        return data_dict
 
 
 @TRANSFORMS.register_module()

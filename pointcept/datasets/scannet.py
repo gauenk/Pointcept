@@ -52,6 +52,13 @@ class ScanNetDataset(DefaultDataset):
             data_list = [
                 os.path.join(self.data_root, "train", name) for name in self.lr
             ]
+
+        print("\n\n\nWARNING: Testing only! find me in pointcept/datasets/scannet.py")
+        names = ["scene0000_00","scene0000_01","scene0000_02",
+                 "scene0001_00","scene0001_01","scene0002_00","scene0002_01"]
+        data_list = [
+            os.path.join(self.data_root, "train", name) for name in names]
+
         return data_list
 
     def get_data(self, idx):
@@ -70,6 +77,12 @@ class ScanNetDataset(DefaultDataset):
             if asset[:-4] not in self.VALID_ASSETS:
                 continue
             data_dict[asset[:-4]] = np.load(os.path.join(data_path, asset))
+        oversegment_fname = os.path.join(data_path, "oversegmention_200.npy")
+        if os.path.exists(oversegment_fname):
+            data_dict['oversegment'] = np.load(oversegment_fname).int()
+            # print(data_dict['oversegment'].min(),data_dict['oversegment'].max())
+            # exit()
+
         data_dict["name"] = name
         data_dict["split"] = split
         data_dict["coord"] = data_dict["coord"].astype(np.float32)
@@ -87,6 +100,11 @@ class ScanNetDataset(DefaultDataset):
         else:
             data_dict["segment"] = (
                 np.ones(data_dict["coord"].shape[0], dtype=np.int32) * -1
+            )
+
+        if not("oversegment" in data_dict.keys()):
+            data_dict["oversegment"] = (
+                np.arange(data_dict["coord"].shape[0], dtype=np.int32)
             )
 
         if "instance" in data_dict.keys():
